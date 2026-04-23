@@ -266,35 +266,7 @@ export default function EditorView({ file }: EditorViewProps) {
           <div className="text-[11px] text-gray-500">{displayType?.toUpperCase()}</div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-all hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-            title="Save (Ctrl+S)"
-          >
-            <Save size={16} />
-            {isSaving ? 'Saving...' : 'Save'}
-          </button>
-
-          <button
-            onClick={handleExport}
-            className="flex items-center gap-1.5 rounded bg-green-600 px-3 py-2 text-sm font-medium text-white transition-all hover:bg-green-700"
-            title="Export"
-          >
-            <Download size={16} />
-            Export
-          </button>
-
-          <button
-            onClick={handlePrint}
-            className="flex items-center gap-1.5 rounded bg-gray-600 px-3 py-2 text-sm font-medium text-white transition-all hover:bg-gray-700"
-            title="Print (Ctrl+P)"
-          >
-            <Printer size={16} />
-            Print
-          </button>
-        </div>
+      
       </div>
 
       {/* Editor content */}

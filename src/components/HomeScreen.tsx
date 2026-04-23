@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { Upload, X, Settings } from 'lucide-react'
+import { Upload, X, Settings, FileText, FileImage, File, FileSpreadsheet, Presentation, PenTool, Layout } from 'lucide-react'
 import { useDocumentStore, DocumentFile } from '../store'
 import { getFileType, formatFileSize, generateFileId } from '../utils'
 import { convertPdfToDocx, isPdfConversionSuccessful } from '../utils/pdfConverter'
@@ -268,58 +268,98 @@ export default function HomeScreen() {
 
       {/* Main content */}
       <div className="flex-1 flex items-center justify-center p-8">
-        <div className="w-full max-w-2xl">
-          {/* Upload area */}
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-lg p-12 text-center transition-colors ${
-              isDragging
-                ? 'border-blue-500 bg-blue-50'
-                : 'border-gray-300 hover:border-gray-400'
-            }`}
-          >
-            <Upload size={48} className="mx-auto mb-4 text-gray-400" />
-            <h2 className="text-2xl font-bold mb-2">Upload a Document</h2>
-            <p className="text-gray-600 mb-4">
-              Drag and drop your PDF, Word, PowerPoint, or Excel file here
-            </p>
-            <div className="mb-4 flex items-center justify-center gap-4 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="pptx-mode"
-                  checked={pptxMode === 'editable'}
-                  onChange={() => setPptxMode('editable')}
-                />
-                Editable PPTX mode
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="radio"
-                  name="pptx-mode"
-                  checked={pptxMode === 'pixel'}
-                  onChange={() => setPptxMode('pixel')}
-                />
-                Pixel-perfect PPTX mode
-              </label>
+        <div className="w-full max-w-4xl">
+          {/* Diamond Grid */}
+          <div className="mb-12">
+            <div className="diamond-container">
+              {/* WhiteBoard - Single */}
+              <div
+                className="diamond-single"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <div className="diamond-content">
+                  <Layout size={28} className="diamond-icon" />
+                  <span>WhiteBoard</span>
+                </div>
+              </div>
+
+              {/* Row 1 - Pair */}
+              <div className="diamond-row">
+                <div
+                  className="diamond"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="diamond-content">
+                    <FileImage size={28} className="diamond-icon" />
+                    <span>Image</span>
+                  </div>
+                </div>
+                <div
+                  className="diamond"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="diamond-content">
+                    <FileImage size={28} className="diamond-icon" />
+                    <span>Medical image</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Plans - Single */}
+              <div
+                className="diamond-single"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <div className="diamond-content">
+                  <PenTool size={28} className="diamond-icon" />
+                  <span>Plans</span>
+                </div>
+              </div>
+
+              {/* Row 2 - Pair */}
+              <div className="diamond-row">
+                <div
+                  className="diamond"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="diamond-content">
+                    <FileText size={28} className="diamond-icon" />
+                    <span>PDF file</span>
+                  </div>
+                </div>
+                <div
+                  className="diamond"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="diamond-content">
+                    <FileSpreadsheet size={28} className="diamond-icon" />
+                    <span>Office pack</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Sign - Single */}
+              <div
+                className="diamond-single"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <div className="diamond-content">
+                  <PenTool size={28} className="diamond-icon" />
+                  <span>Sign</span>
+                </div>
+              </div>
             </div>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
-            >
-              Browse Files
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".pdf,.docx,.pptx,.xlsx"
-              onChange={handleFileInput}
-              className="hidden"
-              multiple
-            />
           </div>
+
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".pdf,.docx,.pptx,.xlsx"
+            onChange={handleFileInput}
+            className="hidden"
+            multiple
+          />
 
           {/* Recent files */}
           {recentFiles.length > 0 && (
@@ -360,6 +400,94 @@ export default function HomeScreen() {
           )}
         </div>
       </div>
+
+      {/* CSS styles */}
+      <style>{`
+        .diamond-container {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          margin-top: 20px;
+        }
+
+        .diamond-row {
+          display: flex;
+          gap: 60px;
+          margin: -60px 0;
+        }
+
+        .diamond, .diamond-single {
+          width: 140px;
+          height: 140px;
+          transform: rotate(45deg);
+          border: 3px solid #2e9e44;
+          background: linear-gradient(145deg, #f6f1d3, #e4dca5);
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          cursor: pointer;
+          transition: all 0.3s ease;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+
+        .diamond-single {
+          margin: 20px 0;
+        }
+
+        .diamond:hover, .diamond-single:hover {
+          transform: rotate(45deg) scale(1.08);
+          box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+          background: linear-gradient(145deg, #f0e98c, #cfc65f);
+        }
+
+        .diamond-content {
+          transform: rotate(-45deg);
+          text-align: center;
+          color: #2e9e44;
+          font-weight: bold;
+          font-size: 14px;
+          pointer-events: none;
+          padding: 10px;
+          word-break: break-word;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .diamond-icon {
+          color: #2e9e44;
+          margin-bottom: 4px;
+        }
+
+        .diamond:hover .diamond-icon,
+        .diamond-single:hover .diamond-icon {
+          color: #1f6e2f;
+        }
+
+        /* Responsive */
+        @media (max-width: 640px) {
+          .diamond, .diamond-single {
+            width: 100px;
+            height: 100px;
+          }
+          
+          .diamond-row {
+            gap: 30px;
+            margin: -40px 0;
+          }
+          
+          .diamond-content {
+            font-size: 10px;
+            gap: 4px;
+          }
+          
+          .diamond-icon {
+            width: 20px;
+            height: 20px;
+          }
+        }
+      `}</style>
     </div>
   )
 }

@@ -24,6 +24,7 @@ import {
   Languages,
   LogOut,
   ChevronDown,
+  Printer,
 } from 'lucide-react'
 
 export interface RibbonActions {
@@ -79,6 +80,14 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
       ? 'Excel mode'
       : 'Word mode'
 
+  const handlePrint = () => {
+    if (actions?.onPrint) {
+      actions.onPrint()
+    } else {
+      window.print()
+    }
+  }
+
   return (
     <div className="border-b border-gray-300 bg-white shadow-sm">
       <div className="flex items-center justify-between gap-3 bg-[#f3f4f6] px-4 py-1.5 text-[11px] text-gray-600">
@@ -100,6 +109,7 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
           <RibbonButton icon={<Save size={18} />} label="Save" onClick={actions?.onSave} disabled={!actions?.onSave} />
           <RibbonButton icon={<FolderOpen size={18} />} label="Open" onClick={actions?.onOpen} disabled={!actions?.onOpen} />
           <RibbonButton icon={<Download size={18} />} label="Export" onClick={actions?.onExport} disabled={!actions?.onExport} />
+          <RibbonButton icon={<Printer size={18} />} label="Print" onClick={handlePrint}  disabled={!actions?.onSave} />
         </RibbonGroup>
 
         <RibbonGroup label="Tools">
@@ -214,7 +224,7 @@ function RibbonButton({ icon, label, onClick, compact = false, disabled = false,
       disabled={disabled}
       className={`group relative flex flex-col items-center justify-center rounded-lg px-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
         active ? 'bg-white/20 shadow-inner' : 'hover:bg-white/15 active:bg-white/20'
-      } ${compact ? 'h-9 w-10' : 'h-16 w-16'}`}
+      } ${compact ? 'h-9 w-10' : 'h-10 w-10'}`}
       title={label}
     >
       <div className="flex items-center justify-center text-white group-hover:text-white">{icon}</div>
