@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { Upload, X, Settings } from 'lucide-react'
+import { Upload, X, Settings, FileText, FileImage, File, FileSpreadsheet, Presentation, PenTool, Layout } from 'lucide-react'
 import { useDocumentStore, DocumentFile } from '../store'
 import { getFileType, formatFileSize, generateFileId } from '../utils'
 import { convertPdfToDocx, isPdfConversionSuccessful } from '../utils/pdfConverter'
@@ -277,7 +277,10 @@ export default function HomeScreen() {
                 className="diamond-single"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <div className="diamond-content">WhiteBoard</div>
+                <div className="diamond-content">
+                  <Layout size={28} className="diamond-icon" />
+                  <span>WhiteBoard</span>
+                </div>
               </div>
 
               {/* Row 1 - Pair */}
@@ -286,13 +289,19 @@ export default function HomeScreen() {
                   className="diamond"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <div className="diamond-content">Image</div>
+                  <div className="diamond-content">
+                    <FileImage size={28} className="diamond-icon" />
+                    <span>Image</span>
+                  </div>
                 </div>
                 <div
                   className="diamond"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <div className="diamond-content">Medical image</div>
+                  <div className="diamond-content">
+                    <FileImage size={28} className="diamond-icon" />
+                    <span>Medical image</span>
+                  </div>
                 </div>
               </div>
 
@@ -301,7 +310,10 @@ export default function HomeScreen() {
                 className="diamond-single"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <div className="diamond-content">Plans</div>
+                <div className="diamond-content">
+                  <PenTool size={28} className="diamond-icon" />
+                  <span>Plans</span>
+                </div>
               </div>
 
               {/* Row 2 - Pair */}
@@ -310,13 +322,19 @@ export default function HomeScreen() {
                   className="diamond"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <div className="diamond-content">PDF file</div>
+                  <div className="diamond-content">
+                    <FileText size={28} className="diamond-icon" />
+                    <span>PDF file</span>
+                  </div>
                 </div>
                 <div
                   className="diamond"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <div className="diamond-content">Office pack</div>
+                  <div className="diamond-content">
+                    <FileSpreadsheet size={28} className="diamond-icon" />
+                    <span>Office pack</span>
+                  </div>
                 </div>
               </div>
 
@@ -325,7 +343,10 @@ export default function HomeScreen() {
                 className="diamond-single"
                 onClick={() => fileInputRef.current?.click()}
               >
-                <div className="diamond-content">Sign</div>
+                <div className="diamond-content">
+                  <PenTool size={28} className="diamond-icon" />
+                  <span>Sign</span>
+                </div>
               </div>
             </div>
           </div>
@@ -428,6 +449,20 @@ export default function HomeScreen() {
           pointer-events: none;
           padding: 10px;
           word-break: break-word;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .diamond-icon {
+          color: #2e9e44;
+          margin-bottom: 4px;
+        }
+
+        .diamond:hover .diamond-icon,
+        .diamond-single:hover .diamond-icon {
+          color: #1f6e2f;
         }
 
         /* Responsive */
@@ -443,7 +478,13 @@ export default function HomeScreen() {
           }
           
           .diamond-content {
-            font-size: 11px;
+            font-size: 10px;
+            gap: 4px;
+          }
+          
+          .diamond-icon {
+            width: 20px;
+            height: 20px;
           }
         }
       `}</style>

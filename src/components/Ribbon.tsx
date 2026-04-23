@@ -109,7 +109,7 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
           <RibbonButton icon={<Save size={18} />} label="Save" onClick={actions?.onSave} disabled={!actions?.onSave} />
           <RibbonButton icon={<FolderOpen size={18} />} label="Open" onClick={actions?.onOpen} disabled={!actions?.onOpen} />
           <RibbonButton icon={<Download size={18} />} label="Export" onClick={actions?.onExport} disabled={!actions?.onExport} />
-          <RibbonButton icon={<Printer size={18} />} label="Print" onClick={handlePrint} />
+          <RibbonButton icon={<Printer size={18} />} label="Print" onClick={handlePrint}  disabled={!actions?.onSave} />
         </RibbonGroup>
 
         <RibbonGroup label="Tools">
