@@ -1,0 +1,114 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Page canvas styling */
+.page-canvas {
+  width: 210mm;
+  height: 297mm;
+  background: white;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+/* Word editor pagination and page framing */
+.word-editor-root .docx-wrapper {
+  padding: 8px 0;
+  background: #e5e7eb;
+}
+
+.word-editor-root .docx-wrapper > section,
+.word-editor-root section.docx {
+  margin: 0 auto 16px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  border-radius: 6px;
+  page-break-after: always;
+  break-after: page;
+  overflow: visible;
+}
+
+/* Force page breaks on large divs within docx-wrapper  */
+.word-editor-root .docx-wrapper > div {
+  page-break-after: auto;
+  break-after: auto;
+}
+
+/* If docx-preview creates this structure, ensure it breaks properly */
+.word-editor-root [class*="docx"] {
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+/* Keep DOCX logos/images visible, including SVG-backed drawings from headers. */
+.word-editor-root .docx-wrapper img,
+.word-editor-root .docx-wrapper svg,
+.word-editor-root .docx-wrapper image,
+.word-editor-root section.docx img,
+.word-editor-root section.docx svg,
+.word-editor-root section.docx image {
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.word-editor-root .docx-wrapper svg,
+.word-editor-root section.docx svg {
+  overflow: visible;
+}
+
+.word-preview-thumb .docx-wrapper {
+  padding: 0 !important;
+  background: #ffffff !important;
+}
+
+.word-preview-thumb .docx-wrapper > section,
+.word-preview-thumb section.docx {
+  margin: 0 !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
+}
+
+/* Ribbon button styling */
+.ribbon-button {
+  @apply px-3 py-2 rounded text-sm font-medium transition-colors cursor-pointer;
+}
+
+.ribbon-button:hover {
+  @apply bg-gray-100;
+}
+
+.ribbon-button.active {
+  @apply bg-gray-200;
+}
+
+/* Smooth transitions */
+.fade-enter {
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

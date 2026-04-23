@@ -1,0 +1,34 @@
+.dark {
+  color-scheme: dark;
+  background-color: #1f2937;
+}
+
+.dark input,
+.dark textarea {
+  background-color: #374151;
+  color: #f3f4f6;
+}
+
+/* Keep document rendering colors untouched in dark mode */
+.dark .word-editor-root,
+.dark .word-editor-root * {
+  color-scheme: light;
+}
+
+.dark .word-editor-root table,
+.dark .word-editor-root td,
+.dark .word-editor-root th,
+.dark .word-editor-root p,
+.dark .word-editor-root span,
+.dark .word-editor-root div,
+.dark .word-editor-root a {
+  background-color: revert;
+  color: revert;
+}
+
+.dark .word-editor-root img,
+.dark .word-editor-root svg,
+.dark .word-editor-root image {
+  filter: none !important;
+  opacity: 1 !important;
+}
