@@ -10,6 +10,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 import time
 from pathlib import Path
+import cloudmersive_convert_api_client
+from cloudmersive_convert_api_client.rest import ApiException
 
 import fitz
 from docx import Document
@@ -38,6 +40,13 @@ CORS(app)
 
 ALLOWED_EXTENSIONS = {'pptx'}
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+
+# Cloudmersive Configuration
+CLOUDMERSIVE_API_KEY = 'a0849081-22a5-4eba-aeb1-46c9d394fc47'
+configuration = cloudmersive_convert_api_client.Configuration()
+configuration.api_key['Apikey'] = CLOUDMERSIVE_API_KEY
+api_client = cloudmersive_convert_api_client.ApiClient(configuration)
+convert_api = cloudmersive_convert_api_client.ConvertDocumentApi(api_client)
 
 LIBREOFFICE_CANDIDATES = [
     os.environ.get('LIBREOFFICE_PATH', ''),
@@ -108,7 +117,7 @@ def _is_table_row(lines, page_width):
     """Heuristic to detect if a group of lines forms a table row."""
     if len(lines) < 2:
         return False
-    
+
     # Check if lines have similar y-coordinates (same row)
     y_values = [line.get('bbox', [0, 0, 0, 0])[1] for line in lines]
     y_range = max(y_values) - min(y_values)
@@ -119,10 +128,10 @@ def convert_pdf_to_docx_custom(pdf_path):
     """Enhanced PDF to DOCX conversion with improved formatting, lists, and structure detection."""
     from docx.shared import Inches
     from docx.enum.text import WD_LINE_SPACING
-    
+
     doc = Document()
     pdf = fitz.open(pdf_path)
-    
+
     last_font_size = 11.0
     consecutive_small_text = 0
 
@@ -140,7 +149,7 @@ def convert_pdf_to_docx_custom(pdf_path):
 
         text_dict = page.get_text('dict')
         blocks = text_dict.get('blocks', [])
-        
+
         # Extract images from the page
         for img_index in range(len(page.get_images())):
             try:
@@ -151,7 +160,7 @@ def convert_pdf_to_docx_custom(pdf_path):
                 else:  # CMYK
                     pix = fitz.Pixmap(fitz.csRGB, pix)
                     img_data = pix.tobytes('png')
-                
+
                 # Add image to document with reasonable sizing
                 from io import BytesIO
                 img_stream = BytesIO(img_data)
@@ -181,13 +190,13 @@ def convert_pdf_to_docx_custom(pdf_path):
 
                 # Create paragraph with enhanced style detection
                 paragraph = doc.add_paragraph()
-                
+
                 # Line positioning and alignment
                 line_bbox = line.get('bbox', [0, 0, 0, 0])
                 page_width = max(page.rect.width, 1)
                 left_ratio = line_bbox[0] / page_width
                 right_ratio = (page_width - line_bbox[2]) / page_width
-                
+
                 # Alignment detection
                 if left_ratio < 0.08 and right_ratio < 0.08:
                     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -199,7 +208,7 @@ def convert_pdf_to_docx_custom(pdf_path):
                 # Enhanced heading and list detection
                 max_size = max(span.get('size', 11) for span in spans)
                 last_font_size = max_size
-                
+
                 # Detect headings based on size
                 if max_size >= 24:
                     paragraph.style = 'Heading 1'
@@ -214,13 +223,13 @@ def convert_pdf_to_docx_custom(pdf_path):
                     # List detection
                     paragraph.style = 'List Bullet'
                     paragraph.paragraph_format.left_indent = Pt(36)
-                
+
                 # Spacing based on context
                 bbox = line.get('bbox', [0, 0, 0, 0])
                 y0 = bbox[1] if len(bbox) > 1 else 0
                 y1 = bbox[3] if len(bbox) > 3 else 0
                 height = max(y1 - y0, 1)
-                
+
                 paragraph.paragraph_format.space_before = Pt(max(min(height * 0.15, 8), 2))
                 paragraph.paragraph_format.space_after = Pt(max(min(height * 0.1, 6), 1))
                 paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
@@ -242,14 +251,14 @@ def convert_pdf_to_docx_custom(pdf_path):
                     run.font.bold = _guess_bold(font_name, flags)
                     run.font.italic = _guess_italic(font_name, flags)
                     run.font.color.rgb = _color_int_to_rgb(span.get('color'))
-                    
+
                     # Subscript/superscript detection based on rise
                     rise = span.get('origin', [0, 0])[1] if span.get('origin') else 0
                     if rise > height * 0.3:
                         run.font.superscript = True
                     elif rise < -height * 0.3:
                         run.font.subscript = True
-                    
+
                     if font_name:
                         try:
                             run.font.name = font_name
@@ -335,8 +344,21 @@ def convert_pptx_to_png_slides(pptx_path):
 
 
 def convert_pdf_to_docx(pdf_path):
-    """Convert PDF to DOCX using pdf2docx first, then LibreOffice fallback."""
-    # Preferred high-fidelity path: preserve text spans and colors from the PDF itself.
+    """Convert PDF to DOCX using Cloudmersive (primary), or custom fitz/pdf2docx logic (fallbacks)."""
+    try:
+        # Try Cloudmersive first for highest fidelity
+        print(f"Attempting Cloudmersive conversion for {pdf_path}")
+        api_response = convert_api.convert_document_pdf_to_docx(pdf_path)
+        # Cloudmersive returns the file path to the result in some versions,
+        # or the bytes directly. The Python client typically returns the bytes.
+        if isinstance(api_response, bytes):
+            return base64.b64encode(api_response).decode('utf-8')
+        elif isinstance(api_response, str) and os.path.exists(api_response):
+            with open(api_response, 'rb') as f:
+                return base64.b64encode(f.read()).decode('utf-8')
+    except Exception as cm_error:
+        print(f"Cloudmersive conversion failed: {cm_error}")
+
     try:
         return convert_pdf_to_docx_custom(pdf_path)
     except Exception as custom_error:
@@ -424,28 +446,28 @@ def extract_text_from_xml(text_body_elem):
             text_elem = text_run.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}t')
             if text_elem is not None:
                 text_content = text_elem.text or ''
-                
+
                 # Extract formatting
                 run_props = text_run.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}rPr')
                 bold = False
                 italic = False
                 color = None
                 font_size = None
-                
+
                 if run_props is not None:
                     bold = run_props.get('b') == '1'
                     italic = run_props.get('i') == '1'
-                    
+
                     # Font size in hundredths of a point
                     if 'sz' in run_props.attrib:
                         font_size = int(run_props.get('sz', 0)) / 100
-                    
+
                     # Text color
                     solid_fill = run_props.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}solidFill')
                     if solid_fill is not None:
                         scheme_color = solid_fill.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}schemeClr')
                         srgb_color = solid_fill.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}srgbClr')
-                        
+
                         if srgb_color is not None:
                             color = '#' + srgb_color.get('val', 'ffffff')
                         elif scheme_color is not None:
@@ -455,7 +477,7 @@ def extract_text_from_xml(text_body_elem):
                                 'accent1': '#0066cc',
                             }
                             color = color_map.get(scheme_color.get('val'), '#000000')
-                
+
                 runs.append({
                     'text': text_content,
                     'bold': bold,
@@ -463,7 +485,7 @@ def extract_text_from_xml(text_body_elem):
                     'color': color,
                     'fontSize': font_size
                 })
-    
+
     return runs
 
 
@@ -541,13 +563,13 @@ def extract_text_runs(paragraph_elem):
 def parse_pptx(file_path):
     """Parse PPTX file and extract slides with formatted content"""
     slides = []
-    
+
     try:
         with zipfile.ZipFile(file_path, 'r') as zip_ref:
             # Read slide dimensions from presentation.xml
             slide_width = 9144000
             slide_height = 5143500
-            
+
             try:
                 pres_xml = zip_ref.read('ppt/presentation.xml').decode('utf-8')
                 pres_root = ET.fromstring(pres_xml)
@@ -565,19 +587,32 @@ def parse_pptx(file_path):
             except Exception as e:
                 print(f"Could not read presentation dimensions: {e}")
                 pass
-            
-            # Get all slide files
+
+            # Get all slide files, being careful to ignore files like slideLayouts or slideProperties
             slide_files = [f for f in zip_ref.namelist() if f.startswith('ppt/slides/slide') and f.endswith('.xml')]
-            slide_files.sort(key=lambda x: int(x.split('slide')[1].split('.')[0]))
-            
+            # Only keep files that are slideN.xml where N is a number
+            def get_slide_num(f):
+                name = os.path.basename(f) # slide1.xml
+                num_part = name.replace('slide', '').replace('.xml', '')
+                try:
+                    return int(num_part)
+                except ValueError:
+                    return None
+
+            slide_files = [f for f in slide_files if get_slide_num(f) is not None]
+            slide_files.sort(key=get_slide_num)
+
             for slide_file in slide_files:
                 try:
-                    slide_num = slide_file.split('slide')[1].split('.')[0]
-                    
+                    slide_num_value = get_slide_num(slide_file)
+                    if slide_num_value is None:
+                        continue
+                    slide_num = str(slide_num_value)
+
                     # Read slide XML
                     slide_xml = zip_ref.read(slide_file).decode('utf-8')
                     slide_root = ET.fromstring(slide_xml)
-                    
+
                     # Read slide relationships
                     rel_file = f'ppt/slides/_rels/slide{slide_num}.xml.rels'
                     relationships = {}
@@ -590,7 +625,7 @@ def parse_pptx(file_path):
                             relationships[rel_id] = target
                     except:
                         pass
-                    
+
                     # Extract text elements and positioned text boxes
                     text_elements = []
                     text_boxes = []
@@ -664,7 +699,7 @@ def parse_pptx(file_path):
                                 'isBullet': is_bullet,
                                 'alignment': alignment,
                             })
-                    
+
                     # Extract images
                     images = []
                     for pic in slide_root.findall('.//{http://schemas.openxmlformats.org/presentationml/2006/main}pic'):
@@ -672,17 +707,17 @@ def parse_pptx(file_path):
                         blip = pic.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}blip')
                         if blip is not None:
                             embed = blip.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
-                            
+
                             if embed and embed in relationships:
                                 image_path = relationships[embed]
                                 if image_path.startswith('../'):
                                     image_path = image_path[3:]
                                 image_path = f'ppt/{image_path}'
-                                
+
                                 try:
                                     image_data = zip_ref.read(image_path)
                                     image_base64 = base64.b64encode(image_data).decode('utf-8')
-                                    
+
                                     # Determine image format
                                     ext = Path(image_path).suffix.lower()
                                     mime_types = {
@@ -693,23 +728,23 @@ def parse_pptx(file_path):
                                         '.bmp': 'bmp',
                                     }
                                     mime = mime_types.get(ext, 'png')
-                                    
+
                                     # Get position and size from xfrm
                                     xfrm = pic.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}xfrm')
                                     x, y, width, height = 0, 0, 15, 15
-                                    
+
                                     if xfrm is not None:
                                         off = xfrm.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}off')
                                         ext_elem = xfrm.find('.//{http://schemas.openxmlformats.org/drawingml/2006/main}ext')
-                                        
+
                                         if off is not None:
                                             x = (int(off.get('x', 0)) / slide_width) * 100
                                             y = (int(off.get('y', 0)) / slide_height) * 100
-                                        
+
                                         if ext_elem is not None:
                                             width = (int(ext_elem.get('cx', 1000000)) / slide_width) * 100
                                             height = (int(ext_elem.get('cy', 1000000)) / slide_height) * 100
-                                    
+
                                     images.append({
                                         'id': embed,
                                         'data': f'data:image/{mime};base64,{image_base64}',
@@ -720,12 +755,12 @@ def parse_pptx(file_path):
                                     })
                                 except Exception as e:
                                     print(f"Error loading image: {e}")
-                    
+
                     # Get slide title
                     title = 'Slide ' + slide_num
                     if text_elements and text_elements[0]['runs']:
                         title = ''.join([r['text'] for r in text_elements[0]['runs']])[:50]
-                    
+
                     slides.append({
                         'id': f'slide-{slide_num}',
                         'number': int(slide_num),
@@ -738,13 +773,13 @@ def parse_pptx(file_path):
                         'width': slide_width,
                         'height': slide_height
                     })
-                
+
                 except Exception as e:
                     print(f"Error parsing slide {slide_file}: {e}")
                     continue
-        
+
         return slides
-    
+
     except Exception as e:
         print(f"Error parsing PPTX: {e}")
         return []
@@ -754,49 +789,49 @@ def upload_pptx():
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'No file provided'}), 400
-        
+
         file = request.files['file']
-        
+
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
-        
+
         if not allowed_file(file.filename):
             return jsonify({'error': 'Only .pptx files are allowed'}), 400
-        
+
         # Save temporarily using system temp directory
         filename = secure_filename(file.filename)
         temp_dir = tempfile.gettempdir()
         temp_path = os.path.join(temp_dir, filename)
-        
+
         print(f"Saving file to: {temp_path}")
         file.save(temp_path)
-        
+
         # Verify file was saved
         if not os.path.exists(temp_path):
             return jsonify({'error': 'Failed to save uploaded file'}), 500
-        
+
         file_size = os.path.getsize(temp_path)
         print(f"File saved, size: {file_size} bytes")
-        
+
         render_mode = request.form.get('renderMode', 'pixel').lower()
         if render_mode == 'editable':
             slides = parse_pptx(temp_path)
         else:
             # Default: pixel-perfect rendering
             slides = convert_pptx_to_png_slides(temp_path)
-        
+
         # Clean up
         try:
             os.remove(temp_path)
         except:
             pass
-        
+
         return jsonify({
             'success': True,
             'slides': slides,
             'total': len(slides)
         }), 200
-    
+
     except Exception as e:
         print(f"Upload error: {e}")
         import traceback
@@ -808,10 +843,10 @@ def upload_pptx():
 def pdf_to_word():
     """
     Convert PDF to DOCX format with high-fidelity preservation of formatting.
-    
+
     Request:
         - file (multipart/form-data): PDF file to convert
-    
+
     Response (200):
         {
             "success": true,
@@ -824,7 +859,7 @@ def pdf_to_word():
                 "processTime": 2.34
             }
         }
-    
+
     Response (400/500):
         {
             "success": false,
@@ -834,7 +869,7 @@ def pdf_to_word():
     """
     import time
     start_time = time.time()
-    
+
     try:
         # Validate request
         if 'file' not in request.files:
@@ -860,19 +895,19 @@ def pdf_to_word():
                 'error': f'Invalid file type: {ext}. Only .pdf files are supported.',
                 'errorCode': 'INVALID_FILE_TYPE'
             }), 400
-        
+
         # Validate file size (50MB max)
         file.seek(0, 2)
         file_size = file.tell()
         file.seek(0)
-        
+
         if file_size > 50 * 1024 * 1024:
             return jsonify({
                 'success': False,
                 'error': 'File size exceeds 50MB limit',
                 'errorCode': 'FILE_TOO_LARGE'
             }), 400
-        
+
         if file_size == 0:
             return jsonify({
                 'success': False,
@@ -893,7 +928,7 @@ def pdf_to_word():
                 'error': f'Failed to save uploaded file: {str(save_error)}',
                 'errorCode': 'SAVE_ERROR'
             }), 500
-        
+
         if not os.path.exists(temp_pdf_path):
             return jsonify({
                 'success': False,
@@ -904,13 +939,13 @@ def pdf_to_word():
         try:
             # Perform conversion
             docx_base64 = convert_pdf_to_docx(temp_pdf_path)
-            
+
             # Calculate conversion metrics
             process_time = time.time() - start_time
-            
+
             # Decode to get actual size
             docx_bytes = base64.b64decode(docx_base64)
-            
+
             # Extract page count from PDF
             try:
                 pdf_doc = fitz.open(temp_pdf_path)
@@ -918,7 +953,7 @@ def pdf_to_word():
                 pdf_doc.close()
             except Exception:
                 page_count = 0
-            
+
             response_data = {
                 'success': True,
                 'docxBase64': docx_base64,
@@ -930,9 +965,9 @@ def pdf_to_word():
                     'processTime': round(process_time, 2)
                 }
             }
-            
+
             return jsonify(response_data), 200
-            
+
         except RuntimeError as runtime_error:
             print(f"PDF->Word conversion runtime error: {runtime_error}")
             return jsonify({
@@ -956,7 +991,6 @@ def pdf_to_word():
                     os.remove(temp_pdf_path)
             except Exception as cleanup_error:
                 print(f"Warning: Could not clean up temp file {temp_pdf_path}: {cleanup_error}")
-    
     except Exception as e:
         print(f"PDF->Word request handler error: {e}")
         import traceback
@@ -966,6 +1000,174 @@ def pdf_to_word():
             'error': 'Server error processing request',
             'errorCode': 'REQUEST_ERROR'
         }), 500
+
+
+@app.route('/api/word-to-pdf', methods=['POST'])
+def word_to_pdf():
+    """Convert Word (DOC/DOCX) to PDF using Cloudmersive."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+        ext = Path(file.filename).suffix.lower()
+        if ext not in ['.doc', '.docx']:
+            return jsonify({'success': False, 'error': f'Unsupported extension: {ext}'}), 400
+
+        filename = secure_filename(file.filename)
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        file.save(temp_path)
+
+        try:
+            print(f"Converting {filename} to PDF via Cloudmersive")
+            if ext == '.doc':
+                api_response = convert_api.convert_document_doc_to_pdf(temp_path)
+            else:
+                api_response = convert_api.convert_document_docx_to_pdf(temp_path)
+
+            if isinstance(api_response, bytes):
+                pdf_base64 = base64.b64encode(api_response).decode('utf-8')
+            elif isinstance(api_response, str) and os.path.exists(api_response):
+                with open(api_response, 'rb') as f:
+                    pdf_base64 = base64.b64encode(f.read()).decode('utf-8')
+            else:
+                raise RuntimeError("Cloudmersive returned unexpected response type")
+
+            return jsonify({
+                'success': True,
+                'pdfBase64': pdf_base64,
+                'pdfFilename': Path(file.filename).stem + '.pdf'
+            }), 200
+
+        except ApiException as e:
+            print(f"Cloudmersive API Exception: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    except Exception as e:
+        print(f"Word-to-PDF error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pdf-to-pptx', methods=['POST'])
+def pdf_to_pptx():
+    """Convert PDF to PPTX using Cloudmersive with high-fidelity design preservation."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+        ext = Path(file.filename).suffix.lower()
+        if ext != '.pdf':
+            return jsonify({'success': False, 'error': f'Unsupported extension: {ext}. Only .pdf is supported.'}), 400
+
+        filename = secure_filename(file.filename)
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        file.save(temp_path)
+
+        try:
+            print(f"Converting {filename} to PPTX via Cloudmersive")
+            api_response = convert_api.convert_document_pdf_to_pptx(temp_path)
+
+            if isinstance(api_response, bytes):
+                pptx_base64 = base64.b64encode(api_response).decode('utf-8')
+            elif isinstance(api_response, str) and os.path.exists(api_response):
+                with open(api_response, 'rb') as f:
+                    pptx_base64 = base64.b64encode(f.read()).decode('utf-8')
+            else:
+                raise RuntimeError("Cloudmersive returned unexpected response type")
+
+            return jsonify({
+                'success': True,
+                'pptxBase64': pptx_base64,
+                'pptxFilename': Path(file.filename).stem + '.pptx'
+            }), 200
+
+        except ApiException as e:
+            print(f"Cloudmersive API Exception: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    except Exception as e:
+        print(f"PDF-to-PPTX error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pptx-to-word', methods=['POST'])
+def pptx_to_word():
+    """Convert PPTX to DOCX using Cloudmersive with high-fidelity design preservation."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No file selected'}), 400
+
+        ext = Path(file.filename).suffix.lower()
+        if ext != '.pptx':
+            return jsonify({'success': False, 'error': f'Unsupported extension: {ext}. Only .pptx is supported.'}), 400
+
+        filename = secure_filename(file.filename)
+        temp_dir = tempfile.gettempdir()
+        temp_path = os.path.join(temp_dir, filename)
+        file.save(temp_path)
+
+        try:
+            print(f"Converting {filename} to Word via Cloudmersive (2-step: PPTX->PDF->Word)")
+
+            # Step 1: PPTX to PDF
+            pdf_bytes = convert_api.convert_document_pptx_to_pdf(temp_path)
+
+            # Save intermediate PDF to temp file
+            temp_pdf_path = os.path.join(temp_dir, f"temp_{filename}.pdf")
+            with open(temp_pdf_path, 'wb') as f:
+                f.write(pdf_bytes)
+
+            try:
+                # Step 2: PDF to DOCX
+                api_response = convert_api.convert_document_pdf_to_docx(temp_pdf_path)
+
+                if isinstance(api_response, bytes):
+                    docx_base64 = base64.b64encode(api_response).decode('utf-8')
+                elif isinstance(api_response, str) and os.path.exists(api_response):
+                    with open(api_response, 'rb') as f:
+                        docx_base64 = base64.b64encode(f.read()).decode('utf-8')
+                else:
+                    raise RuntimeError("Cloudmersive returned unexpected response type")
+
+                return jsonify({
+                    'success': True,
+                    'docxBase64': docx_base64,
+                    'docxFilename': Path(file.filename).stem + '.docx'
+                }), 200
+            finally:
+                if os.path.exists(temp_pdf_path):
+                    os.remove(temp_pdf_path)
+
+        except ApiException as e:
+            print(f"Cloudmersive API Exception: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    except Exception as e:
+        print(f"PPTX-to-Word error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health():

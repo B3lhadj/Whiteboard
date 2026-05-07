@@ -1,9 +1,18 @@
-import { useEffect, useState, useRef } from 'react'
+import {
+  useEffect,
+  useState,
+  useRef,
+  type ChangeEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
 import { calculateWordCount, calculateCharCount } from '../../utils'
 import { AlertCircle } from 'lucide-react'
 import * as mammoth from 'mammoth'
 import { renderAsync } from 'docx-preview'
+import PageRail, { type PageRailItem } from '../PageRail'
+import EditorNavigation from '../EditorNavigation'
 
 interface WordPagePreview {
   id: string
@@ -11,6 +20,7 @@ interface WordPagePreview {
   subtitle: string
   html: string
   scrollTop: number
+  selector?: string
 }
 
 interface WordEditorProps {
@@ -23,14 +33,81 @@ export default function WordEditor({ file }: WordEditorProps) {
   const [fallbackHtml, setFallbackHtml] = useState<string | null>(null)
   const [pagePreviews, setPagePreviews] = useState<WordPagePreview[]>([])
   const editorRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const contentScrollRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const pageOffsetsRef = useRef<number[]>([])
+  const pendingImagePointRef = useRef<{ x: number; y: number } | null>(null)
   const zoom = useDocumentStore((state) => state.zoom)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const textColor = useDocumentStore((state) => state.textColor)
+  const textFontFamily = useDocumentStore((state) => state.textFontFamily)
+  const textFontSize = useDocumentStore((state) => state.textFontSize)
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const setWordCount = useDocumentStore((state) => state.setWordCount)
   const setCharCount = useDocumentStore((state) => state.setCharCount)
   const setEditorHtml = useDocumentStore((state) => state.setEditorHtml)
+  const addPage = useDocumentStore((state) => state.addPage)
+
+  /**
+   * Replace Unicode ligature characters and special typographic glyphs
+   * with their plain-text equivalents so text is always readable,
+   * even when the original font isn't available in the browser.
+   */
+  const fixLigatures = (container: HTMLElement) => {
+    const ligatureMap: Record<string, string> = {
+      '\uFB00': 'ff',   // ff ligature
+      '\uFB01': 'fi',   // fi ligature
+      '\uFB02': 'fl',   // fl ligature
+      '\uFB03': 'ffi',  // ffi ligature
+      '\uFB04': 'ffl',  // ffl ligature
+      '\uFB05': 'st',   // long-s t ligature
+      '\uFB06': 'st',   // st ligature
+      '\u0132': 'IJ',   // IJ ligature
+      '\u0133': 'ij',   // ij ligature
+      '\u0152': 'OE',   // OE ligature
+      '\u0153': 'oe',   // oe ligature
+      '\u00C6': 'AE',   // AE ligature
+      '\u00E6': 'ae',   // ae ligature
+      '\u2013': '–',    // en dash
+      '\u2014': '—',    // em dash
+      '\u2018': "'",    // left single quote
+      '\u2019': "'",    // right single quote
+      '\u201C': '"',    // left double quote
+      '\u201D': '"',    // right double quote
+      '\u2026': '...',  // ellipsis
+      '\u00A0': ' ',    // non-breaking space → regular space (for rendering)
+    }
+
+    // Build a regex matching all ligature characters
+    const pattern = new RegExp(
+      Object.keys(ligatureMap).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+      'g'
+    )
+
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null)
+    const textNodes: Text[] = []
+    let node: Text | null
+    while ((node = walker.nextNode() as Text | null)) {
+      textNodes.push(node)
+    }
+
+    let replaced = 0
+    for (const textNode of textNodes) {
+      const original = textNode.nodeValue
+      if (!original) continue
+      const fixed = original.replace(pattern, (match) => ligatureMap[match] || match)
+      if (fixed !== original) {
+        textNode.nodeValue = fixed
+        replaced++
+      }
+    }
+
+    if (replaced > 0) {
+      console.log(`Fixed ligatures in ${replaced} text nodes`)
+    }
+  }
 
   useEffect(() => {
     const loadDocument = async () => {
@@ -62,39 +139,8 @@ export default function WordEditor({ file }: WordEditorProps) {
           useBase64URL: true,
         })
 
-        // Debug: Log the actual structure created by docx-preview
-        console.log('Container after renderAsync:', {
-          innerHTML_length: container.innerHTML.length,
-          children: container.children.length,
-          scrollHeight: container.scrollHeight,
-        })
-        
-        // Log ALL children structure
-        console.log('=== CONTAINER CHILDREN STRUCTURE ===')
-        Array.from(container.children).forEach((child, i) => {
-          const el = child as HTMLElement
-          console.log(`Child ${i}:`, {
-            tag: el.tagName,
-            class: el.className,
-            id: el.id,
-            height: el.clientHeight,
-            scrollHeight: el.scrollHeight,
-            children_count: el.children.length,
-            text_length: el.textContent?.length || 0,
-          })
-          
-          // If this is docx-wrapper, log its children
-          if (el.className.includes('docx-wrapper')) {
-            Array.from(el.children).forEach((grandchild, j) => {
-              const gchild = grandchild as HTMLElement
-              console.log(`  └─ Child ${j}:`, {
-                tag: gchild.tagName,
-                class: gchild.className,
-                height: gchild.clientHeight,
-              })
-            })
-          }
-        })
+        // Fix ligature characters that browsers can't render without the original font
+        fixLigatures(container)
 
         // Always start from top to avoid landing mid-document on reload.
         container.scrollTop = 0
@@ -239,30 +285,6 @@ export default function WordEditor({ file }: WordEditorProps) {
     return pages.length > 1 ? pages : [pageElement]
   }
 
-  const splitPageByHeight = (pageElement: HTMLElement, standardHeight: number = 1120): HTMLElement[] => {
-    console.log('=== ATTEMPTING TO SPLIT PAGE BY HEIGHT ===')
-    console.log(`Standard page height: ${standardHeight}px, actual height: ${pageElement.clientHeight}px`)
-
-    const actualHeight = pageElement.clientHeight
-    if (actualHeight <= standardHeight * 1.2) {
-      console.log('Page height is within tolerance, not splitting')
-      return [pageElement]
-    }
-
-    const estimatedPages = Math.ceil(actualHeight / standardHeight)
-    console.log(`Estimated ${estimatedPages} pages needed`)
-
-    // Clone the page element once to create multiple instances
-    const pages: HTMLElement[] = []
-    for (let i = 0; i < estimatedPages; i++) {
-      const clone = pageElement.cloneNode(true) as HTMLElement
-      pages.push(clone)
-    }
-
-    console.log(`Created ${pages.length} page elements by height splitting`)
-    return pages
-  }
-
   const collectPageNodes = (container: HTMLDivElement) => {
     console.log('=== COLLECT PAGE NODES ===')
     console.log('Container dimensions:', {
@@ -288,20 +310,18 @@ export default function WordEditor({ file }: WordEditorProps) {
 
       if (candidates.length > 0) {
         console.log(`✓ Found ${candidates.length} page(s) using selector: "${selector}"`)
-        
+
         // If only 1 page but it's very tall, try to split it
         if (candidates.length === 1 && candidates[0].clientHeight > 1200) {
           console.log('Single large page detected (height > 1200px), attempting to split...')
-          
+
           // First try splitting by page break markers
-          let splitPages = splitPagesByPageBreaks(candidates[0])
-          
-          // If that didn't work, split by height
+          const splitPages = splitPagesByPageBreaks(candidates[0])
+
           if (splitPages.length <= 1) {
-            console.log('Page break splitting failed or found no breaks, using height-based splitting')
-            splitPages = splitPageByHeight(candidates[0])
+            console.log('Page break splitting failed or found no breaks; using virtual page slices.')
           }
-          
+
           if (splitPages.length > 1) {
             console.log(`✓ Successfully split into ${splitPages.length} pages`)
             splitPages.forEach((page, i) => {
@@ -365,7 +385,7 @@ export default function WordEditor({ file }: WordEditorProps) {
     console.log(
       `⚠ No page nodes found. Container: height=${container.clientHeight}, scrollHeight=${container.scrollHeight}, children=${container.children.length}`
     )
-    
+
     // Log all direct children for inspection
     Array.from(container.children).forEach((child, i) => {
       const el = child as HTMLElement
@@ -373,12 +393,27 @@ export default function WordEditor({ file }: WordEditorProps) {
         `  Direct child ${i}: tag=${el.tagName}, class="${el.className}", height=${el.clientHeight}, text="${el.textContent?.slice(0, 50)}"`
       )
     })
-    
+
     return []
   }
 
   const buildPageModel = (container: HTMLDivElement, pages: HTMLElement[]) => {
     const toSubtitle = (text: string) => text.replace(/\s+/g, ' ').trim().slice(0, 110)
+    const buildVirtualPageHtml = (pageNode: HTMLElement, offset: number, pageHeight: number, index: number) => {
+      const pageWidth = Math.max(pageNode.scrollWidth, pageNode.offsetWidth, 794)
+
+      return `
+        <div
+          class="word-virtual-page"
+          data-word-page-index="${index}"
+          style="height:${pageHeight}px;width:${pageWidth}px;max-width:100%;overflow:hidden;position:relative;margin:0 auto 16px;background:#ffffff;box-shadow:0 6px 18px rgba(15,23,42,0.16);border-radius:6px;"
+        >
+          <div style="width:${pageWidth}px;transform:translateY(-${offset}px);transform-origin:top left;">
+            ${pageNode.outerHTML}
+          </div>
+        </div>
+      `
+    }
 
     if (pages.length === 0) {
       console.warn('No pages detected, using single page fallback')
@@ -399,21 +434,22 @@ export default function WordEditor({ file }: WordEditorProps) {
     // Normal case: real page wrappers detected (could be original or split)
     if (pages.length > 1) {
       console.log(`Building pagination for ${pages.length} page(s)`)
-      
+
       // For split pages (clones), offsetTop will be 0, so calculate based on accumulated heights
       const offsets: number[] = []
       let accumulatedHeight = 0
       pages.forEach((pageNode) => {
-        const offsetTop = pageNode.offsetTop === 0 || pageNode.offsetTop === undefined 
-          ? accumulatedHeight 
+        const offsetTop = pageNode.offsetTop === 0 || pageNode.offsetTop === undefined
+          ? accumulatedHeight
           : pageNode.offsetTop
         offsets.push(offsetTop)
         accumulatedHeight += pageNode.clientHeight + 16 // 16px is the margin-bottom
       })
-      
+
       console.log('Calculated page offsets:', offsets)
-      
+
       const previews = pages.map((pageNode, index) => {
+        pageNode.dataset.wordPageIndex = String(index)
         const subtitle = toSubtitle(pageNode.textContent || '')
         return {
           id: String(index + 1),
@@ -421,6 +457,7 @@ export default function WordEditor({ file }: WordEditorProps) {
           subtitle: subtitle || `Page ${index + 1}`,
           html: pageNode.outerHTML,
           scrollTop: offsets[index],
+          selector: `[data-word-page-index="${index}"]`,
         }
       })
 
@@ -441,7 +478,7 @@ export default function WordEditor({ file }: WordEditorProps) {
 
     // Standard A4 page in pixels at normal zoom
     const standardPageHeight = 1120
-    
+
     // If the document is suspiciously long or the container isn't showing proper height, do smarter detection
     if (totalHeight > standardPageHeight * 1.5 || containerScrollHeight > standardPageHeight * 1.5) {
       // This looks like it should be multiple pages
@@ -450,13 +487,14 @@ export default function WordEditor({ file }: WordEditorProps) {
 
       const offsets = Array.from({ length: estimatedPageCount }, (_, i) => i * standardPageHeight)
       const previewSubtitle = toSubtitle(firstPage.textContent || container.textContent || '')
-      
+
       const previews = offsets.map((offset, index) => ({
         id: String(index + 1),
         label: `Page ${index + 1}`,
         subtitle: previewSubtitle || `Page ${index + 1}`,
-        html: firstPage.outerHTML,
+        html: buildVirtualPageHtml(firstPage, offset, standardPageHeight, index),
         scrollTop: offset,
+        selector: `[data-word-page-index="${index}"]`,
       }))
 
       console.log(`Created ${estimatedPageCount} virtual pages with offsets:`, offsets)
@@ -465,6 +503,7 @@ export default function WordEditor({ file }: WordEditorProps) {
 
     // Document appears to be single page
     console.log(`Document appears to be single page (height ${totalHeight}px is under ${standardPageHeight * 1.5}px threshold)`)
+    firstPage.dataset.wordPageIndex = '0'
     return {
       offsets: [0],
       previews: [
@@ -474,26 +513,47 @@ export default function WordEditor({ file }: WordEditorProps) {
           subtitle: toSubtitle(firstPage.textContent || container.textContent || ''),
           html: firstPage.outerHTML,
           scrollTop: 0,
+          selector: '[data-word-page-index="0"]',
         },
       ],
     }
   }
 
   useEffect(() => {
-    const root = editorRef.current
+    const root = contentScrollRef.current
 
     if (!root || pageOffsetsRef.current.length === 0) return
 
     const onScroll = () => {
-      const currentScroll = root.scrollTop
-      const offsets = pageOffsetsRef.current
+      const editorRoot = editorRef.current
+      const viewportRect = root.getBoundingClientRect()
       let pageNumber = 1
 
-      for (let i = 0; i < offsets.length; i++) {
-        const next = offsets[i + 1] ?? Number.POSITIVE_INFINITY
-        if (currentScroll >= offsets[i] - 12 && currentScroll < next - 12) {
-          pageNumber = i + 1
-          break
+      if (editorRoot) {
+        let closestDistance = Number.POSITIVE_INFINITY
+        pagePreviews.forEach((page, index) => {
+          const target = page.selector
+            ? editorRoot.querySelector(page.selector) as HTMLElement | null
+            : null
+          if (!target) return
+
+          const distance = Math.abs(target.getBoundingClientRect().top - viewportRect.top - 16)
+          if (distance < closestDistance) {
+            closestDistance = distance
+            pageNumber = index + 1
+          }
+        })
+      }
+
+      if (pageNumber === 1 && pagePreviews.every((page) => !page.selector)) {
+        const currentScroll = root.scrollTop
+        const offsets = pageOffsetsRef.current
+        for (let i = 0; i < offsets.length; i++) {
+          const next = offsets[i + 1] ?? Number.POSITIVE_INFINITY
+          if (currentScroll >= offsets[i] - 12 && currentScroll < next - 12) {
+            pageNumber = i + 1
+            break
+          }
         }
       }
 
@@ -506,6 +566,17 @@ export default function WordEditor({ file }: WordEditorProps) {
     return () => root.removeEventListener('scroll', onScroll)
   }, [pagePreviews, setCurrentPage])
 
+  const handleWordPageChange = (pageNum: number) => {
+    const pageCount = Math.max(1, pagePreviews.length)
+    const nextPage = Math.min(Math.max(1, pageNum), pageCount)
+    setCurrentPage(nextPage)
+
+    window.requestAnimationFrame(() => {
+      viewportRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+      contentScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' })
+    })
+  }
+
   const handleContentChange = () => {
     if (editorRef.current) {
       const text = editorRef.current.innerText
@@ -515,71 +586,338 @@ export default function WordEditor({ file }: WordEditorProps) {
     }
   }
 
+  const syncEditorState = () => {
+    const container = editorRef.current
+    if (!container) return
+
+    setEditorHtml(container.innerHTML)
+    const text = container.innerText || ''
+    setWordCount(calculateWordCount(text))
+    setCharCount(calculateCharCount(text))
+  }
+
+  const getEditorPoint = (event: ReactPointerEvent<HTMLDivElement> | ReactMouseEvent<HTMLDivElement>) => {
+    const container = editorRef.current
+    if (!container) return { x: 24, y: 24 }
+    const rect = container.getBoundingClientRect()
+    const scale = zoom / 100 || 1
+    return {
+      x: Math.max(0, (event.clientX - rect.left) / scale),
+      y: Math.max(0, (event.clientY - rect.top) / scale),
+    }
+  }
+
+  const createToolObject = (className: string, x: number, y: number, html = '') => {
+    const container = editorRef.current
+    if (!container) return null
+
+    const element = document.createElement('div')
+    element.className = `word-tool-object ${className}`
+    element.style.left = `${x}px`
+    element.style.top = `${y}px`
+    element.innerHTML = html
+    container.appendChild(element)
+    syncEditorState()
+    return element
+  }
+
+  const applyCurrentTypingColor = () => {
+    const container = editorRef.current
+    const selection = window.getSelection()
+    if (!container || !selection || selection.rangeCount === 0) return
+    if (!container.contains(selection.getRangeAt(0).commonAncestorContainer)) return
+
+    document.execCommand('styleWithCSS', false, 'true')
+    document.execCommand('foreColor', false, textColor)
+    document.execCommand('fontName', false, textFontFamily)
+  }
+
+  const beginMoveToolObject = (event: ReactPointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    const editableTarget = event.target instanceof HTMLElement
+      ? event.target.closest('[contenteditable="true"]')
+      : null
+    if (editableTarget && object.classList.contains('word-textbox-object')) return
+
+    event.preventDefault()
+    const startX = event.clientX
+    const startY = event.clientY
+    const initialLeft = parseFloat(object.style.left || '0')
+    const initialTop = parseFloat(object.style.top || '0')
+    const scale = zoom / 100 || 1
+
+    const move = (moveEvent: PointerEvent) => {
+      object.style.left = `${initialLeft + (moveEvent.clientX - startX) / scale}px`
+      object.style.top = `${initialTop + (moveEvent.clientY - startY) / scale}px`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      syncEditorState()
+    }
+
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+
+  const handleToolPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (isLoading || error) return
+
+    const target = event.target as HTMLElement
+    const selectedObject = target.closest('.word-tool-object') as HTMLElement | null
+
+    if (activeTool === 'select') {
+      if (selectedObject) {
+        beginMoveToolObject(event, selectedObject)
+      }
+      return
+    }
+
+    if (activeTool === 'text' && target.closest('.word-textbox-object')) {
+      return
+    }
+
+    if (activeTool === 'erase') {
+      event.preventDefault()
+      if (selectedObject) {
+        selectedObject.remove()
+      } else {
+        document.execCommand('delete', false)
+      }
+      syncEditorState()
+      return
+    }
+
+    if (activeTool === 'shape') {
+      event.preventDefault()
+      const point = getEditorPoint(event)
+      createToolObject('word-shape-object', point.x, point.y)
+      return
+    }
+
+    if (activeTool === 'text') {
+      event.preventDefault()
+      const point = getEditorPoint(event)
+      const textBox = createToolObject(
+        'word-textbox-object',
+        point.x,
+        point.y,
+        `<div contenteditable="true" spellcheck="false" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px;">Text box</div>`
+      )
+      const editable = textBox?.querySelector('[contenteditable="true"]') as HTMLElement | null
+      editable?.focus()
+      return
+    }
+
+    if (activeTool === 'image') {
+      event.preventDefault()
+      pendingImagePointRef.current = getEditorPoint(event)
+      imageInputRef.current?.click()
+      return
+    }
+
+    if (activeTool === 'draw') {
+      event.preventDefault()
+      const container = editorRef.current
+      if (!container) return
+
+      const start = getEditorPoint(event)
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      const points = [start]
+
+      svg.classList.add('word-tool-object', 'word-drawing-object')
+      svg.setAttribute('contenteditable', 'false')
+      path.setAttribute('fill', 'none')
+      path.setAttribute('stroke', '#2563eb')
+      path.setAttribute('stroke-width', '3')
+      path.setAttribute('stroke-linecap', 'round')
+      path.setAttribute('stroke-linejoin', 'round')
+      path.setAttribute('d', `M ${start.x} ${start.y}`)
+      svg.appendChild(path)
+      container.appendChild(svg)
+
+      const draw = (moveEvent: PointerEvent) => {
+        const rect = container.getBoundingClientRect()
+        const scale = zoom / 100 || 1
+        points.push({
+          x: Math.max(0, (moveEvent.clientX - rect.left) / scale),
+          y: Math.max(0, (moveEvent.clientY - rect.top) / scale),
+        })
+        path.setAttribute(
+          'd',
+          points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ')
+        )
+      }
+
+      const stop = () => {
+        window.removeEventListener('pointermove', draw)
+        window.removeEventListener('pointerup', stop)
+        syncEditorState()
+      }
+
+      window.addEventListener('pointermove', draw)
+      window.addEventListener('pointerup', stop)
+    }
+  }
+
+  const handleImagePicked = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    const point = pendingImagePointRef.current
+    event.target.value = ''
+    pendingImagePointRef.current = null
+    if (!file || !point) return
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (!dataUrl) return
+      createToolObject(
+        'word-image-object',
+        point.x,
+        point.y,
+        `<img src="${dataUrl}" alt="" />`
+      )
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const pageCount = Math.max(1, pagePreviews.length)
+  const safeCurrentPage = Math.min(Math.max(1, currentPage), pageCount)
+
+  useEffect(() => {
+    if (pagePreviews.length > 0 && currentPage !== safeCurrentPage) {
+      setCurrentPage(safeCurrentPage)
+    }
+  }, [currentPage, pagePreviews.length, safeCurrentPage, setCurrentPage])
+
+  const activePageHtml = pagePreviews[safeCurrentPage - 1]?.html || fallbackHtml || undefined
+
+  const pageItems: PageRailItem[] = pagePreviews.map((page, index) => ({
+    id: String(index + 1),
+    label: page.label,
+    subtitle: page.subtitle,
+    preview: (
+      <div className="word-preview-thumb flex h-full w-full items-start justify-center overflow-hidden bg-white">
+        <div
+          className="origin-top text-[8px]"
+          style={{ width: '794px', transform: 'scale(0.19)', transformOrigin: 'top center' }}
+          dangerouslySetInnerHTML={{ __html: page.html }}
+        />
+      </div>
+    ),
+    onClick: () => handleWordPageChange(index + 1),
+    onDelete: pagePreviews.length > 1 ? () => {
+      // Actually remove the page section from the rendered DOM
+      const container = editorRef.current
+      if (container) {
+        // Find all page section nodes in the DOM
+        const pageSections = Array.from(
+          container.querySelectorAll('.docx-wrapper > section.docx, .docx-wrapper > section, section.docx')
+        ) as HTMLElement[]
+
+        // If we found real page sections matching our preview count
+        if (pageSections.length > 0 && index < pageSections.length) {
+          const sectionToRemove = pageSections[index]
+          sectionToRemove.parentNode?.removeChild(sectionToRemove)
+          console.log(`Removed page section ${index + 1} from DOM`)
+        } else {
+          // Fallback: if pages were split virtually, try to remove by height
+          console.warn('Could not find exact DOM section to delete, using virtual approach')
+        }
+
+        // Update the editor HTML and counts after DOM change
+        setEditorHtml(container.innerHTML)
+        const text = container.innerText || ''
+        setWordCount(calculateWordCount(text))
+        setCharCount(calculateCharCount(text))
+      }
+
+      // Update the previews list
+      const newPreviews = pagePreviews.filter((_, i) => i !== index)
+      // Recalculate labels for remaining pages
+      const relabeledPreviews = newPreviews.map((p, i) => ({
+        ...p,
+        id: String(i + 1),
+        label: `Page ${i + 1}`,
+      }))
+      setPagePreviews(relabeledPreviews)
+
+      // Rebuild page offsets
+      if (container) {
+        const remainingSections = Array.from(
+          container.querySelectorAll('.docx-wrapper > section.docx, .docx-wrapper > section, section.docx')
+        ) as HTMLElement[]
+        if (remainingSections.length > 0) {
+          pageOffsetsRef.current = remainingSections.map((el) => el.offsetTop)
+        } else {
+          pageOffsetsRef.current = [0]
+        }
+      }
+
+      // Fix current page
+      if (safeCurrentPage > newPreviews.length) {
+        setCurrentPage(Math.max(1, newPreviews.length))
+      } else if (safeCurrentPage === index + 1) {
+        setCurrentPage(Math.min(index + 1, newPreviews.length))
+      }
+    } : undefined,
+  }))
+
+  const handleReorderPages = (fromIndex: number, toIndex: number) => {
+    const newPreviews = [...pagePreviews]
+    const removedPreviews = newPreviews.splice(fromIndex, 1)
+    newPreviews.splice(toIndex, 0, removedPreviews[0])
+    setPagePreviews(newPreviews)
+
+    // Update current page if needed
+    if (safeCurrentPage === fromIndex + 1) {
+      setCurrentPage(toIndex + 1)
+    } else if (safeCurrentPage > fromIndex && safeCurrentPage <= toIndex) {
+      setCurrentPage(safeCurrentPage - 1)
+    } else if (safeCurrentPage >= toIndex && safeCurrentPage < fromIndex) {
+      setCurrentPage(safeCurrentPage + 1)
+    }
+  }
+
   return (
-    <div className="flex-1 min-h-0 bg-gray-100 flex overflow-hidden">
-      <aside className="w-52 shrink-0 border-r border-gray-200 bg-white flex flex-col shadow-sm">
-        <div className="px-3 pt-3 pb-2 text-[11px] font-bold tracking-[0.18em] text-gray-600">PAGES</div>
-        <div className="flex-1 overflow-y-auto px-2 pb-3">
-          {pagePreviews.map((page, index) => {
-            const isActive = currentPage === index + 1
-            return (
-              <button
-                key={page.id}
-                onClick={() => {
-                  const root = editorRef.current
-                  if (root) {
-                    root.scrollTo({ top: page.scrollTop, behavior: 'smooth' })
-                  }
-                  setCurrentPage(index + 1)
-                }}
-                className={`mb-2 w-full rounded-xl border-2 p-2 text-left transition-all ${
-                  isActive
-                    ? 'bg-blue-50 shadow-sm border-blue-500'
-                    : 'bg-white hover:bg-gray-50 hover:shadow-sm border-gray-200'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2 px-0.5 pb-2">
-                  <span className="text-[11px] font-semibold text-gray-700 truncate">{page.label}</span>
-                  <span className="text-[10px] font-bold text-gray-400">{index + 1}</span>
-                </div>
-
-                <div className="h-24 overflow-hidden rounded-lg border border-gray-200 bg-white">
-                  <div
-                    className="word-preview-thumb origin-top-left scale-[0.11] pointer-events-none"
-                    style={{ width: '909%' }}
-                    dangerouslySetInnerHTML={{ __html: page.html }}
-                  />
-                </div>
-
-                <div className="mt-2 truncate text-[11px] text-gray-500">{page.subtitle}</div>
-              </button>
-            )
-          })}
-        </div>
-      </aside>
-
-      <div className="flex-1 min-w-0 overflow-auto p-4 md:p-6">
-        <div className="relative mx-auto w-full max-w-[980px] rounded-2xl border border-gray-200 bg-white shadow-lg overflow-hidden">
+    <div data-print-editor="word" className="flex-1 min-h-0 bg-white flex overflow-hidden">
+      <div data-print-editor-main="true" ref={viewportRef} className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white p-0 sm:p-1 md:p-2">
+        <div data-print-scroll="true" ref={contentScrollRef} className="relative mx-auto flex min-h-0 w-full max-w-none flex-1 justify-center overflow-auto bg-white">
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleImagePicked}
+          />
           <div
+            data-print-document="true"
             ref={editorRef}
             contentEditable
             spellCheck={false}
-            className={`word-editor-root min-h-[80vh] bg-[#e5e7eb] p-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-4 overflow-auto ${
+            className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
               activeTool === 'text'
                 ? 'cursor-text'
                 : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
                 ? 'cursor-crosshair'
+                : activeTool === 'erase'
+                ? 'cursor-not-allowed'
                 : 'cursor-text'
             }`}
             style={{
-              transform: `scale(${zoom / 100})`,
+              transform: `scale(${(zoom * 1.12) / 100})`,
               transformOrigin: 'top center',
               color: '#333',
-              maxWidth: '100%',
+              width: 'max-content',
+              minWidth: '100%',
             }}
+            onPointerDown={handleToolPointerDown}
+            onKeyDown={applyCurrentTypingColor}
+            onMouseUp={applyCurrentTypingColor}
             onInput={handleContentChange}
             suppressContentEditableWarning
-            dangerouslySetInnerHTML={fallbackHtml ? { __html: fallbackHtml } : undefined}
+            dangerouslySetInnerHTML={activePageHtml ? { __html: activePageHtml } : undefined}
           />
 
           {isLoading && (
@@ -601,7 +939,37 @@ export default function WordEditor({ file }: WordEditorProps) {
             </div>
           )}
         </div>
+        <EditorNavigation
+          current={safeCurrentPage}
+          total={pagePreviews.length}
+          onPrevious={() => handleWordPageChange(safeCurrentPage - 1)}
+          onNext={() => handleWordPageChange(safeCurrentPage + 1)}
+          className="shrink-0 border-t border-gray-200 bg-white"
+        />
       </div>
+
+      <PageRail
+        title="SCREENS"
+        items={pageItems}
+        activeId={String(safeCurrentPage)}
+        accentColor="#2563eb"
+        side="right"
+        onAddStep={() => {
+          addPage()
+          setPagePreviews([
+            ...pagePreviews,
+            {
+              id: `new-page-${Date.now()}`,
+              label: `Page ${pagePreviews.length + 1}`,
+              subtitle: 'New page',
+              html: '<div></div>',
+              scrollTop: 0,
+            }
+          ])
+          setCurrentPage(pagePreviews.length + 1)
+        }}
+        onReorder={handleReorderPages}
+      />
     </div>
   )
 }

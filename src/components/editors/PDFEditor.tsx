@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { ChevronLeft, ChevronRight, AlertCircle, Type, Download, Trash2 } from 'lucide-react'
+import { AlertCircle, Type, Download, Trash2 } from 'lucide-react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { showErrorToast } from '../../utils/toast'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
+import EditorNavigation from '../EditorNavigation'
+import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
 
 interface PDFEditorProps {
   file: DocumentFile
@@ -17,6 +19,7 @@ interface PdfAnnotation {
   yRatio: number
   text: string
   fontSize: number
+  fontFamily: string
   color: string
 }
 
@@ -28,7 +31,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 
 export default function PDFEditor({ file }: PDFEditorProps) {
   const [pdfDoc, setPdfDoc] = useState<any>(null)
-  const [totalPages, setTotalPages] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pdfSourceBuffer, setPdfSourceBuffer] = useState<ArrayBuffer | null>(null)
@@ -39,11 +41,22 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const [isExporting, setIsExporting] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
 
+  const currentFile = useDocumentStore((state) => state.currentFile)
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const zoom = useDocumentStore((state) => state.zoom)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const textColor = useDocumentStore((state) => state.textColor)
+  const textFontFamily = useDocumentStore((state) => state.textFontFamily)
+  const textFontSize = useDocumentStore((state) => state.textFontSize)
+  const addPage = useDocumentStore((state) => state.addPage)
+  const updatePageOrder = useDocumentStore((state) => state.updatePageOrder)
+  const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
+
+  const pageOrder = currentFile?.pageOrder || []
+  const viewOnly = currentFile?.viewOnly || false
 
   const pageAnnotations = useMemo(
     () => annotations.filter((a) => a.page === currentPage),
@@ -68,7 +81,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         const pdfData = new Uint8Array(stableBuffer.slice(0))
         const doc = await pdfjsLib.getDocument({ data: pdfData }).promise
         setPdfDoc(doc)
-        setTotalPages(doc.numPages)
+        // Initialize page order in store if not already set
+        if (!currentFile?.pageOrder || currentFile.pageOrder.length === 0) {
+          updatePageOrder(Array.from({ length: doc.numPages }, (_, i) => i))
+        }
         setPageThumbnails([])
         setCurrentPage(1)
       } catch (err: any) {
@@ -80,7 +96,6 @@ export default function PDFEditor({ file }: PDFEditorProps) {
           const url = URL.createObjectURL(blob)
           const doc = await pdfjsLib.getDocument(url).promise
           setPdfDoc(doc)
-          setTotalPages(doc.numPages)
           setCurrentPage(1)
           setError(null)
           setPdfSourceBuffer(fallbackBuffer)
@@ -103,12 +118,16 @@ export default function PDFEditor({ file }: PDFEditorProps) {
 
   useEffect(() => {
     const buildThumbnails = async () => {
-      if (!pdfDoc || totalPages === 0) return
+      if (!pdfDoc || pageOrder.length === 0) return
 
       try {
         const thumbs: string[] = []
-        for (let index = 1; index <= totalPages; index += 1) {
-          const page = await pdfDoc.getPage(index)
+        for (let originalIndex of pageOrder) {
+          if (originalIndex === -1) {
+            thumbs.push('') // Blank page has no thumbnail
+            continue
+          }
+          const page = await pdfDoc.getPage(originalIndex + 1)
           const viewport = page.getViewport({ scale: 0.18 })
           const canvas = document.createElement('canvas')
           const context = canvas.getContext('2d')
@@ -127,15 +146,39 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
 
     buildThumbnails()
-  }, [pdfDoc, totalPages])
+  }, [pdfDoc, pageOrder])
 
   useEffect(() => {
     const renderPage = async () => {
-      if (!pdfDoc || !canvasRef.current) return
+      if (!pdfDoc || !canvasRef.current || pageOrder.length === 0) return
+
+      // Make sure current page is valid
+      if (currentPage < 1 || currentPage > pageOrder.length) {
+        setCurrentPage(1)
+        return
+      }
 
       try {
-        const page = await pdfDoc.getPage(Math.min(currentPage, pdfDoc.numPages))
-        const scale = (zoom / 100) * 1.5
+        const actualPageIndex = pageOrder[currentPage - 1]
+        if (actualPageIndex === undefined || actualPageIndex === -1) {
+          // Blank page or placeholder
+          const canvas = canvasRef.current
+          const context = canvas?.getContext('2d')
+          if (canvas && context) {
+            canvas.width = 600
+            canvas.height = 800
+            context.fillStyle = '#ffffff'
+            context.fillRect(0, 0, canvas.width, canvas.height)
+            context.fillStyle = '#94a3b8'
+            context.font = '24px Arial'
+            context.textAlign = 'center'
+            context.fillText('Blank Page', canvas.width / 2, canvas.height / 2)
+          }
+          return
+        }
+
+        const page = await pdfDoc.getPage(actualPageIndex + 1)
+        const scale = (zoom / 100) * 2.35
         const viewport = page.getViewport({ scale })
 
         const canvas = canvasRef.current
@@ -155,10 +198,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
 
     renderPage()
-  }, [pdfDoc, currentPage, zoom])
+  }, [pdfDoc, currentPage, zoom, pageOrder, setCurrentPage])
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isAddTextMode || !canvasRef.current) return
+    if ((!isAddTextMode && activeTool !== 'text') || !canvasRef.current) return
 
     const rect = canvasRef.current.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
@@ -172,8 +215,9 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       xRatio,
       yRatio,
       text: 'Edit me',
-      fontSize: 14,
-      color: '#d11a2a',
+      fontSize: textFontSize,
+      fontFamily: textFontFamily,
+      color: textColor,
     }
 
     setAnnotations((prev) => [...prev, newAnnotation])
@@ -184,6 +228,25 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const updateAnnotation = (id: string, patch: Partial<PdfAnnotation>) => {
     setAnnotations((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)))
   }
+
+  useEffect(() => {
+    const currentFormat = { textColor, textFontFamily, textFontSize }
+    const previousFormat = lastToolbarFormatRef.current
+    const changed =
+      previousFormat.textColor !== textColor ||
+      previousFormat.textFontFamily !== textFontFamily ||
+      previousFormat.textFontSize !== textFontSize
+
+    lastToolbarFormatRef.current = currentFormat
+
+    if (changed && selectedAnnotationId) {
+      updateAnnotation(selectedAnnotationId, {
+        color: textColor,
+        fontFamily: textFontFamily,
+        fontSize: textFontSize,
+      })
+    }
+  }, [selectedAnnotationId, textColor, textFontFamily, textFontSize])
 
   const removeAnnotation = (id: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== id))
@@ -203,6 +266,16 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     return { r, g, b }
   }
 
+  const getPdfStandardFont = (fontFamily: string) => {
+    if (fontFamily.includes('Times') || fontFamily === 'Georgia' || fontFamily === 'Cambria') {
+      return StandardFonts.TimesRoman
+    }
+    if (fontFamily.includes('Courier') || fontFamily === 'Consolas') {
+      return StandardFonts.Courier
+    }
+    return StandardFonts.Helvetica
+  }
+
   const handleExportEditedPdf = async () => {
     try {
       setIsExporting(true)
@@ -210,31 +283,55 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         throw new Error('No PDF source data available. Please re-upload the PDF.')
       }
 
-      const pdfBytes = pdfSourceBuffer.slice(0)
-      const doc = await PDFDocument.load(pdfBytes)
-      const font = await doc.embedFont(StandardFonts.Helvetica)
+      const sourceDoc = await PDFDocument.load(pdfSourceBuffer)
+      const outDoc = await PDFDocument.create()
+      const embeddedFonts = new Map<string, Awaited<ReturnType<typeof outDoc.embedFont>>>()
+      const getEmbeddedFont = async (fontFamily: string) => {
+        const standardFont = getPdfStandardFont(fontFamily)
+        if (!embeddedFonts.has(standardFont)) {
+          embeddedFonts.set(standardFont, await outDoc.embedFont(standardFont))
+        }
+        return embeddedFonts.get(standardFont)!
+      }
 
-      annotations.forEach((annotation) => {
-        if (!annotation.text.trim()) return
-        const page = doc.getPage(annotation.page - 1)
-        if (!page) return
+      for (let i = 0; i < pageOrder.length; i++) {
+        const originalIndex = pageOrder[i]
+        let page
 
-        const width = page.getWidth()
-        const height = page.getHeight()
-        const x = annotation.xRatio * width
-        const y = height - annotation.yRatio * height - annotation.fontSize
-        const color = hexToRgb(annotation.color)
+        if (originalIndex === -1) {
+          // Add a blank A4-ish page
+          page = outDoc.addPage([595, 842])
+        } else {
+          const [copiedPage] = await outDoc.copyPages(sourceDoc, [originalIndex])
+          page = outDoc.addPage(copiedPage)
+        }
 
-        page.drawText(annotation.text, {
-          x,
-          y,
-          size: annotation.fontSize,
-          font,
-          color: rgb(color.r, color.g, color.b),
-        })
-      })
+        // Find annotations that belong to this position in the new document
+        const posInNewDoc = i + 1
+        const relevantAnnotations = annotations.filter((a) => a.page === posInNewDoc)
 
-      const editedBytes = await doc.save()
+        for (const annotation of relevantAnnotations) {
+          if (!annotation.text.trim()) continue
+          const { width, height } = page.getSize()
+          const x = annotation.xRatio * width
+          const y = height - annotation.yRatio * height - annotation.fontSize
+          const color = hexToRgb(annotation.color)
+          const font = await getEmbeddedFont(annotation.fontFamily)
+          const lineHeight = annotation.fontSize * 1.25
+
+          annotation.text.split(/\r?\n/).forEach((line, lineIndex) => {
+            page.drawText(line || ' ', {
+              x,
+              y: y - lineIndex * lineHeight,
+              size: annotation.fontSize,
+              font,
+              color: rgb(color.r, color.g, color.b),
+            })
+          })
+        }
+      }
+
+      const editedBytes = await outDoc.save()
       const editedBuffer = editedBytes.buffer.slice(
         editedBytes.byteOffset,
         editedBytes.byteOffset + editedBytes.byteLength
@@ -254,12 +351,58 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
   }
 
-  const pageItems: PageRailItem[] = Array.from({ length: totalPages }, (_, index) => ({
+  const selectPdfPage = (pageNumber: number) => {
+    setCurrentPage(pageNumber)
+    setSelectedAnnotationId(null)
+    if (isAddTextMode) {
+      setIsAddTextMode(false)
+    }
+  }
+
+  const pageItems: PageRailItem[] = pageOrder.map((originalIndex, index) => ({
     id: String(index + 1),
     label: `Page ${index + 1}`,
-    thumbnail: pageThumbnails[index] ?? null,
-    onClick: () => setCurrentPage(index + 1),
+    // Use positional index — pageThumbnails is built sequentially from pageOrder
+    thumbnail: originalIndex === -1 ? null : (pageThumbnails[index] ?? null),
+    onClick: () => selectPdfPage(index + 1),
+    onDelete: !viewOnly ? () => {
+        const newOrder = pageOrder.filter((_, i) => i !== index)
+        updatePageOrder(newOrder)
+
+        // Immediately rebuild thumbnails for the remaining pages
+        setPageThumbnails((prev) => prev.filter((_, i) => i !== index))
+
+        // Always validate and update currentPage to ensure valid state
+        if (newOrder.length === 0) {
+          setCurrentPage(1)
+        } else if (currentPage > newOrder.length) {
+          setCurrentPage(newOrder.length)
+        } else if (currentPage === index + 1) {
+          // If we deleted the current page, show the next page or go back
+          setCurrentPage(Math.min(index + 1, newOrder.length))
+        }
+    } : undefined,
   }))
+
+  const selectedAnnotation = selectedAnnotationId
+    ? annotations.find((a) => a.id === selectedAnnotationId)
+    : null
+
+  const handleReorder = (fromIndex: number, toIndex: number) => {
+    const newOrder = [...pageOrder]
+    const removedPages = newOrder.splice(fromIndex, 1)
+    newOrder.splice(toIndex, 0, removedPages[0])
+    updatePageOrder(newOrder)
+
+    // Update current page if needed
+    if (currentPage === fromIndex + 1) {
+      setCurrentPage(toIndex + 1)
+    } else if (currentPage > fromIndex && currentPage <= toIndex) {
+      setCurrentPage(currentPage - 1)
+    } else if (currentPage >= toIndex && currentPage < fromIndex) {
+      setCurrentPage(currentPage + 1)
+    }
+  }
 
   if (isLoading) {
     return (
@@ -288,64 +431,54 @@ export default function PDFEditor({ file }: PDFEditorProps) {
 
   return (
     <div className="flex-1 min-h-0 bg-gray-100 flex overflow-hidden">
-      <PageRail
-        title="PAGES"
-        items={pageItems}
-        activeId={String(currentPage)}
-        accentColor="#dc2626"
-      />
+      <div className="flex-1 min-w-0 overflow-auto p-0 sm:p-1 md:p-2 relative">
+        {/* Mode Toggle */}
+        <div className="absolute top-4 right-6 z-20">
+          <button
+            onClick={() => toggleViewMode()}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${
+              viewOnly
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+            }`}
+          >
+            {viewOnly ? 'View mode' : 'Edit mode'}
+          </button>
+        </div>
 
-      <div className="flex-1 min-w-0 overflow-auto p-4 md:p-6">
-        <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4">
-          <div className="flex items-center justify-center gap-3 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-            <button
-              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-              disabled={currentPage === 1}
-              className="rounded p-2 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-              title="Previous page"
-            >
-              <ChevronLeft size={20} className="text-gray-700" />
-            </button>
-            <span className="min-w-fit rounded border border-gray-200 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-800">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-              disabled={currentPage === totalPages}
-              className="rounded p-2 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-              title="Next page"
-            >
-              <ChevronRight size={20} className="text-gray-700" />
-            </button>
-            <button
-              onClick={() => setIsAddTextMode((v) => !v)}
-              className={`ml-4 flex items-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors ${
-                isAddTextMode
-                  ? 'bg-red-600 text-white'
-                  : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-              }`}
-              title="Add text annotation"
-            >
-              <Type size={16} />
-              {isAddTextMode ? 'Click on page...' : 'Add Text'}
-            </button>
-            <button
-              onClick={handleExportEditedPdf}
-              disabled={isExporting}
-              className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
-              title="Download edited PDF"
-            >
-              <Download size={16} />
-              {isExporting ? 'Exporting...' : 'Download Edited PDF'}
-            </button>
+        <div className="mx-auto flex w-full max-w-none flex-col gap-2">
+          <div className="rounded-lg border border-gray-200 bg-white px-2 py-2 sm:px-4 sm:py-3 shadow-sm">
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => setIsAddTextMode((v) => !v)}
+                className={`flex items-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors ${
+                  isAddTextMode
+                    ? 'bg-red-600 text-white'
+                    : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+                }`}
+                title="Add text annotation"
+              >
+                <Type size={16} />
+                {isAddTextMode ? 'Click on page...' : 'Add Text'}
+              </button>
+              <button
+                onClick={handleExportEditedPdf}
+                disabled={isExporting}
+                className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
+                title="Download edited PDF"
+              >
+                <Download size={16} />
+                {isExporting ? 'Exporting...' : 'Download Edited PDF'}
+              </button>
+            </div>
           </div>
 
-          <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-md">
-            <div ref={canvasContainerRef} className="relative mx-auto w-fit">
+          <div className="rounded-lg border border-gray-200 bg-white p-0 sm:p-1 shadow-md">
+            <div ref={canvasContainerRef} className="relative mx-auto w-fit overflow-auto" style={{ maxHeight: 'calc(100vh - 170px)' }}>
               <canvas
                 ref={canvasRef}
                 onClick={handleCanvasClick}
-                className={`max-w-full rounded border border-gray-100 h-auto ${
+                className={`rounded border border-gray-100 h-auto ${
                   isAddTextMode || activeTool === 'text'
                     ? 'cursor-crosshair'
                     : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
@@ -353,26 +486,33 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                     : 'cursor-default'
                 }`}
                 style={{
-                  maxHeight: 'calc(100vh - 300px)',
+                  maxWidth: 'none',
+                  width: 'auto',
+                  height: 'auto',
+                  maxHeight: 'none',
+                  display: 'block',
+                  margin: '0 auto',
                 }}
               />
 
               {pageAnnotations.map((annotation) => (
-                <input
+                <textarea
                   key={annotation.id}
-                  type="text"
                   value={annotation.text}
                   onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
                   onFocus={() => setSelectedAnnotationId(annotation.id)}
-                  className={`absolute min-w-[90px] rounded border bg-white/80 px-1 py-0.5 text-sm ${
+                  rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
+                  className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
                     selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
                   }`}
                   style={{
                     left: `${annotation.xRatio * 100}%`,
                     top: `${annotation.yRatio * 100}%`,
                     fontSize: `${annotation.fontSize}px`,
+                    fontFamily: annotation.fontFamily,
                     color: annotation.color,
                     transform: 'translateY(-100%)',
+                    lineHeight: 1.25,
                   }}
                 />
               ))}
@@ -382,29 +522,58 @@ export default function PDFEditor({ file }: PDFEditorProps) {
               <div className="mt-3 flex flex-wrap items-center gap-3 rounded border bg-gray-50 p-3">
                 <span className="text-sm font-medium text-gray-700">Selected Annotation</span>
                 <label className="flex items-center gap-2 text-sm text-gray-700">
+                  Font
+                  <select
+                    value={selectedAnnotation?.fontFamily || 'Helvetica'}
+                    onChange={(e) => updateAnnotation(selectedAnnotationId, { fontFamily: e.target.value })}
+                    className="w-36 rounded border px-2 py-1"
+                  >
+                    {EDITOR_FONT_FAMILIES.map((font) => (
+                      <option key={font} value={font} style={{ fontFamily: font }}>
+                        {font}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
                   Size
-                  <input
-                    type="number"
-                    min={8}
-                    max={72}
-                    value={annotations.find((a) => a.id === selectedAnnotationId)?.fontSize || 14}
+                  <select
+                    value={selectedAnnotation?.fontSize || 14}
                     onChange={(e) =>
                       updateAnnotation(selectedAnnotationId, {
-                        fontSize: Math.max(8, Math.min(72, parseInt(e.target.value || '14'))),
+                        fontSize: parseInt(e.target.value, 10),
                       })
                     }
-                    className="w-16 rounded border px-2 py-1"
-                  />
+                    className="w-20 rounded border px-2 py-1"
+                  >
+                    {EDITOR_FONT_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="flex items-center gap-2 text-sm text-gray-700">
                   Color
                   <input
                     type="color"
-                    value={annotations.find((a) => a.id === selectedAnnotationId)?.color || '#d11a2a'}
+                    value={selectedAnnotation?.color || '#d11a2a'}
                     onChange={(e) => updateAnnotation(selectedAnnotationId, { color: e.target.value })}
                     className="h-8 w-10 rounded border p-0"
                   />
                 </label>
+                <div className="flex flex-wrap gap-1">
+                  {EDITOR_COLOR_PALETTE.map((color) => (
+                    <button
+                      key={color}
+                      onClick={() => updateAnnotation(selectedAnnotationId, { color })}
+                      className="h-6 w-6 rounded border border-gray-300 shadow-sm"
+                      style={{ backgroundColor: color }}
+                      title={color}
+                      aria-label={color}
+                    />
+                  ))}
+                </div>
                 <button
                   onClick={() => removeAnnotation(selectedAnnotationId)}
                   className="ml-auto flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
@@ -415,8 +584,28 @@ export default function PDFEditor({ file }: PDFEditorProps) {
               </div>
             )}
           </div>
+          <EditorNavigation
+            current={currentPage}
+            total={pageOrder.length}
+            onPrevious={() => setCurrentPage(Math.max(1, currentPage - 1))}
+            onNext={() => setCurrentPage(Math.min(pageOrder.length, currentPage + 1))}
+            className="sticky bottom-0 z-20 border-t border-gray-200 bg-gray-100/95 backdrop-blur"
+          />
         </div>
       </div>
+
+      <PageRail
+        title="SCREENS"
+        items={pageItems}
+        activeId={String(currentPage)}
+        accentColor="#dc2626"
+        side="right"
+        onAddStep={!viewOnly ? () => {
+            addPage()
+            setCurrentPage(pageOrder.length + 1)
+        } : undefined}
+        onReorder={!viewOnly ? handleReorder : undefined}
+      />
     </div>
   )
 }

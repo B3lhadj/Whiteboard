@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../store'
-import { ChevronLeft} from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
+import { Document as DocxDocument, Packer, Paragraph, TextRun } from 'docx'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
 import Ribbon, { type RibbonActions } from './Ribbon'
@@ -15,6 +16,13 @@ interface EditorViewProps {
   file: DocumentFile
 }
 
+const isCssGradient = (value: string) => value.trim().startsWith('linear-gradient(')
+
+const getColorFallback = (value: string) =>
+  value.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/)?.[0] || '#111827'
+
+const getBaseFileName = (filename: string) => filename.replace(/\.[^/.]+$/, '') || 'document'
+
 export default function EditorView({ file }: EditorViewProps) {
   const [, setIsSaving] = useState(false)
   const [rotation, setRotation] = useState(0)
@@ -22,30 +30,121 @@ export default function EditorView({ file }: EditorViewProps) {
   const [position, setPosition] = useState({ x: 0, y: 0 })
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const imageContainerRef = useRef<HTMLDivElement>(null)
-  
+
   const clearCurrentFile = useDocumentStore((state) => state.clearCurrentFile)
   const editorHtml = useDocumentStore((state) => state.editorHtml)
   const zoom = useDocumentStore((state) => state.zoom)
   const setZoom = useDocumentStore((state) => state.setZoom)
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
+  const setTextColor = useDocumentStore((state) => state.setTextColor)
+  const setTextFontFamily = useDocumentStore((state) => state.setTextFontFamily)
+  const setTextFontSize = useDocumentStore((state) => state.setTextFontSize)
   const displayType = (file.originalType || file.type) as DocumentFile['type']
+  const lastEditableRootRef = useRef<HTMLElement | null>(null)
+  const lastEditableRangeRef = useRef<Range | null>(null)
 
   const handleBack = () => {
-    showSuccessToast('✅ File closed', displayType)
+    showSuccessToast('File closed', displayType)
     clearCurrentFile()
   }
 
   const handleSave = async () => {
     setIsSaving(true)
-    // For images, save the current state if edited
-    if (file.type === 'image') {
-      // You could implement image saving here if needed
-      await new Promise((resolve) => setTimeout(resolve, 800))
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, 800))
-    }
+    await new Promise((resolve) => setTimeout(resolve, 800))
     setIsSaving(false)
-    showSuccessToast(`✅ ${file.name} saved successfully!`, file.type)
+    showSuccessToast(`${file.name} saved successfully!`, file.type)
+  }
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  const getDocumentMimeType = () => {
+    if (file.type === 'image') return getImageMimeType(file.name)
+
+    const mimeTypes: Record<string, string> = {
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      pdf: 'application/pdf',
+    }
+
+    return file.type ? mimeTypes[file.type] || 'application/octet-stream' : 'application/octet-stream'
+  }
+
+  const getCopyFileName = () => {
+    const extension = file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : ''
+    return `${getBaseFileName(file.name)}-copy${extension}`
+  }
+
+  const getTextLinesFromHtml = (html: string) => {
+    const container = document.createElement('div')
+    container.innerHTML = html
+
+    container.querySelectorAll('script, style').forEach((node) => node.remove())
+    container.querySelectorAll('br').forEach((node) => node.replaceWith('\n'))
+    container.querySelectorAll('td, th').forEach((node) => node.appendChild(document.createTextNode('\t')))
+    container
+      .querySelectorAll('p, div, section, article, table, tr, h1, h2, h3, h4, h5, h6, li')
+      .forEach((node) => node.appendChild(document.createTextNode('\n')))
+
+    return (container.textContent || '')
+      .replace(/\u00a0/g, ' ')
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+  }
+
+  const buildDocxFromEditorHtml = async () => {
+    const lines = getTextLinesFromHtml(editorHtml)
+    const children = lines.length > 0
+      ? lines.map((line) =>
+          new Paragraph({
+            children: [
+              new TextRun({
+                text: line,
+                size: 22,
+              }),
+            ],
+          })
+        )
+      : [new Paragraph({ children: [new TextRun({ text: file.name })] })]
+
+    const document = new DocxDocument({
+      sections: [
+        {
+          children,
+        },
+      ],
+    })
+
+    const blob = await Packer.toBlob(document)
+    return new Blob([blob], { type: getDocumentMimeType() })
+  }
+
+  const handleSaveAs = async () => {
+    try {
+      if (file.type === 'docx' && editorHtml.trim()) {
+        const blob = await buildDocxFromEditorHtml()
+        downloadBlob(blob, `${getBaseFileName(file.name)}-edited.docx`)
+        showSuccessToast(`${file.name} saved as DOCX file`, file.type)
+        return
+      }
+
+      const blob = new Blob([file.content.slice(0)], { type: getDocumentMimeType() })
+      downloadBlob(blob, getCopyFileName())
+      showSuccessToast(`${file.name} saved as copy`, file.type)
+    } catch (err) {
+      console.error('Save as failed:', err)
+      showErrorToast('Could not save the file.')
+    }
   }
 
   const handleExport = async () => {
@@ -119,7 +218,7 @@ export default function EditorView({ file }: EditorViewProps) {
         a.download = file.name
         a.click()
         URL.revokeObjectURL(url)
-        showSuccessToast(`✅ ${file.name} exported successfully!`, file.type)
+        showSuccessToast(`${file.name} exported successfully!`, file.type)
       } catch (err) {
         console.error('Export failed:', err)
         showErrorToast('Could not export image.')
@@ -238,8 +337,38 @@ export default function EditorView({ file }: EditorViewProps) {
     return anchorElement?.closest('[contenteditable="true"]') as HTMLElement | null
   }
 
-  const applySelectionStyle = (style: Partial<CSSStyleDeclaration>) => {
+  const saveEditableSelection = () => {
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+
     const root = getEditableRoot()
+    if (!root) return
+
+    lastEditableRootRef.current = root
+    lastEditableRangeRef.current = selection.getRangeAt(0).cloneRange()
+  }
+
+  const restoreEditableSelection = () => {
+    const root = lastEditableRootRef.current
+    const range = lastEditableRangeRef.current
+    if (!root || !range || !document.contains(root)) return getEditableRoot()
+
+    root.focus()
+    const selection = window.getSelection()
+    if (!selection) return root
+
+    selection.removeAllRanges()
+    selection.addRange(range.cloneRange())
+    return root
+  }
+
+  useEffect(() => {
+    document.addEventListener('selectionchange', saveEditableSelection)
+    return () => document.removeEventListener('selectionchange', saveEditableSelection)
+  }, [])
+
+  const applySelectionStyle = (style: Record<string, string>) => {
+    const root = restoreEditableSelection()
     if (!root) return
 
     root.focus()
@@ -260,6 +389,8 @@ export default function EditorView({ file }: EditorViewProps) {
       nextRange.collapse(true)
       selection.removeAllRanges()
       selection.addRange(nextRange)
+      lastEditableRootRef.current = root
+      lastEditableRangeRef.current = nextRange.cloneRange()
     } else {
       const span = document.createElement('span')
       Object.assign(span.style, style)
@@ -275,9 +406,73 @@ export default function EditorView({ file }: EditorViewProps) {
       nextRange.selectNodeContents(span)
       selection.removeAllRanges()
       selection.addRange(nextRange)
+      lastEditableRootRef.current = root
+      lastEditableRangeRef.current = nextRange.cloneRange()
     }
 
     root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+  }
+
+  const applyInlineCommand = (command: 'bold' | 'italic' | 'underline') => {
+    const root = getEditableRoot()
+    if (root) {
+      root.focus()
+    }
+
+    document.execCommand(command, false)
+    document.dispatchEvent(new Event('selectionchange'))
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
+  }
+
+  const applyValueCommand = (command: 'foreColor' | 'fontName', value: string) => {
+    if (command === 'foreColor' && isCssGradient(value)) {
+      applySelectionStyle({
+        backgroundImage: value,
+        backgroundClip: 'text',
+        webkitBackgroundClip: 'text',
+        color: 'transparent',
+        webkitTextFillColor: 'transparent',
+      })
+      document.dispatchEvent(new Event('selectionchange'))
+      return
+    }
+
+    const root = restoreEditableSelection()
+    if (root) {
+      root.focus()
+    }
+
+    document.execCommand('styleWithCSS', false, 'true')
+
+    const selection = window.getSelection()
+    if (command === 'foreColor' && root && selection?.rangeCount && selection.getRangeAt(0).collapsed) {
+      const range = selection.getRangeAt(0)
+      const span = document.createElement('span')
+      span.style.color = value
+      const marker = document.createTextNode('\u200b')
+      span.appendChild(marker)
+      range.insertNode(span)
+
+      const nextRange = document.createRange()
+      nextRange.setStart(marker, 1)
+      nextRange.collapse(true)
+      selection.removeAllRanges()
+      selection.addRange(nextRange)
+      lastEditableRootRef.current = root
+      lastEditableRangeRef.current = nextRange.cloneRange()
+    } else {
+      document.execCommand(command, false, value)
+      saveEditableSelection()
+    }
+
+    document.dispatchEvent(new Event('selectionchange'))
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
   }
 
   const applyParagraphCommand = (command: 'justifyLeft' | 'justifyCenter' | 'justifyRight' | 'justifyFull') => {
@@ -286,6 +481,9 @@ export default function EditorView({ file }: EditorViewProps) {
       root.focus()
     }
     document.execCommand(command, false)
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
   }
 
   const replaceTextInEditable = (searchText: string, replacementText: string) => {
@@ -345,26 +543,37 @@ export default function EditorView({ file }: EditorViewProps) {
 
   const toolbarActions: RibbonActions = {
     onSave: handleSave,
+    onSaveAs: handleSaveAs,
     onOpen: handleBack,
     onExport: handleExport,
     onPrint: handlePrint,
     onZoomIn: () => setZoom(Math.min(300, zoom + 10)),
     onZoomOut: () => setZoom(Math.max(10, zoom - 10)),
-    onToggleBold: () => applySelectionStyle({ fontWeight: 'bold' }),
-    onToggleItalic: () => applySelectionStyle({ fontStyle: 'italic' }),
-    onToggleUnderline: () => applySelectionStyle({ textDecoration: 'underline' }),
+    onToggleBold: () => applyInlineCommand('bold'),
+    onToggleItalic: () => applyInlineCommand('italic'),
+    onToggleUnderline: () => applyInlineCommand('underline'),
     onAlignLeft: () => applyParagraphCommand('justifyLeft'),
     onAlignCenter: () => applyParagraphCommand('justifyCenter'),
     onAlignRight: () => applyParagraphCommand('justifyRight'),
     onAlignJustify: () => applyParagraphCommand('justifyFull'),
-    onSetFontFamily: (font) => applySelectionStyle({ fontFamily: font }),
-    onSetFontSize: (size) => applySelectionStyle({ fontSize: `${size}px` }),
-    onSetColor: (color) => applySelectionStyle({ color }),
+    onSetFontFamily: (font) => {
+      setTextFontFamily(font)
+      applyValueCommand('fontName', font)
+    },
+    onSetFontSize: (size) => {
+      setTextFontSize(size)
+      applySelectionStyle({ fontSize: `${size}px` })
+    },
+    onSetColor: (color) => {
+      setTextColor(isCssGradient(color) ? getColorFallback(color) : color)
+      applyValueCommand('foreColor', color)
+    },
     onFind: handleFind,
     onReplace: handleReplace,
     onSetTool: setActiveTool,
     onSetLanguage: (language) => console.log('Language changed to', language),
     onBack: handleBack,
+    onLogout: handleBack,
     // Image-specific actions
     onRotateLeft: file.type === 'image' ? handleRotateLeft : undefined,
     onRotateRight: file.type === 'image' ? handleRotateRight : undefined,
@@ -395,10 +604,10 @@ export default function EditorView({ file }: EditorViewProps) {
   }, [clearCurrentFile])
 
   return (
-    <div className="w-full h-full flex flex-col bg-white">
+    <div className="w-full h-full flex flex-col bg-white" data-editor-shell="true">
       <Ribbon fileType={displayType} actions={toolbarActions} />
 
-      <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
+      <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
         <button
           onClick={handleBack}
           className="flex items-center gap-2 rounded px-3 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-200"
@@ -415,7 +624,8 @@ export default function EditorView({ file }: EditorViewProps) {
       </div>
 
       {/* Editor content */}
-      <div 
+      <div
+        data-print-content="true"
         className="flex-1 overflow-hidden flex flex-col"
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -441,7 +651,9 @@ export default function EditorView({ file }: EditorViewProps) {
         )}
       </div>
 
-      <StatusBar file={file} />
+      <div data-print-hidden="true">
+        <StatusBar file={file} />
+      </div>
     </div>
   )
 }

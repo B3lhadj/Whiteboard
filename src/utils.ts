@@ -4,6 +4,8 @@ export function getFileType(file: File): FileType {
   const name = file.name.toLowerCase()
   if (name.endsWith('.docx')) return 'docx'
   if (name.endsWith('.pptx')) return 'pptx'
+  if (name.endsWith('.xlsm')) return 'xlsx'
+  if (name.endsWith('.xls')) return 'xlsx'
   if (name.endsWith('.xlsx')) return 'xlsx'
   if (name.endsWith('.pdf')) return 'pdf'
   // Image support
@@ -15,10 +17,10 @@ export function getThemeForFileType(fileType: FileType): string {
   const themes: Record<string, string> = {
     docx: '#2b579a',
     xlsx: '#217346',
-    pptx: '#b7472a',
-    pdf: '#e02b20',
-    image: '#0ea5a4',
-    default: '#3b82f6',
+    pptx: '#c2410c',
+    pdf: '#dc2626',
+    image: '#0891b2',
+    default: '#2b579a',
   }
   return themes[fileType || 'default'] || themes.default
 }

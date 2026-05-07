@@ -22,7 +22,11 @@ export interface DocumentFile {
   uploadedAt: number
   slides?: any[] // For Flask-parsed PPTX slides
   originalType?: FileType
-  workflow?: 'pdf-to-word'
+  workflow?: 'pdf-to-word' | 'pdf-to-docx' | 'pdf-to-pptx' | 'pptx-to-word'
+  viewOnly?: boolean
+  pageOrder?: number[] // For PDF/Word page ordering (array of original page indices)
+  wordPages?: any[] // For Word document page previews
+  sheetOrder?: string[] // For Excel sheet ordering
 }
 
 export interface DocumentState {
@@ -36,9 +40,12 @@ export interface DocumentState {
   charCount: number
   editorHtml: string
   activeTool: ToolbarTool
+  textColor: string
+  textFontFamily: string
+  textFontSize: number
   selectedLanguage: string
   toasts: ToastMessage[]
-  
+
   // Actions
   setCurrentFile: (file: DocumentFile) => void
   addRecentFile: (file: DocumentFile) => void
@@ -51,12 +58,33 @@ export interface DocumentState {
   setCharCount: (count: number) => void
   setEditorHtml: (html: string) => void
   setActiveTool: (tool: ToolbarTool) => void
+  setTextColor: (color: string) => void
+  setTextFontFamily: (font: string) => void
+  setTextFontSize: (size: number) => void
   setSelectedLanguage: (language: string) => void
   clearCurrentFile: () => void
   loadRecentFilesFromStorage: () => void
   saveRecentFilesToStorage: () => void
   showToast: (message: string, type: ToastType, color?: string, duration?: number) => void
   removeToast: (id: string) => void
+
+  // Slide Management (PowerPoint)
+  deleteSlide: (slideId: string) => void
+  addSlide: () => void
+  moveSlide: (slideId: string, direction: 'up' | 'down') => void
+  toggleViewMode: () => void
+
+  // Page Management (PDF/Word)
+  deletePage: (pageIndex: number) => void
+  addPage: () => void
+  movePage: (pageIndex: number, direction: 'up' | 'down') => void
+  updatePageOrder: (pageOrder: number[]) => void
+
+  // Sheet Management (Excel)
+  deleteSheet: (sheetName: string) => void
+  addSheet: (sheetName: string) => void
+  moveSheet: (sheetName: string, direction: 'up' | 'down') => void
+  updateSheetOrder: (sheetOrder: string[]) => void
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
@@ -70,11 +98,14 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   charCount: 0,
   editorHtml: '',
   activeTool: 'select',
+  textColor: '#111827',
+  textFontFamily: 'Calibri',
+  textFontSize: 16,
   selectedLanguage: 'English',
   toasts: [],
 
   setCurrentFile: (file) => {
-    set({ currentFile: file })
+    set({ currentFile: file, currentPage: 1, zoom: 100 })
   },
 
   addRecentFile: (file) => {
@@ -118,6 +149,12 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   setActiveTool: (tool) => set({ activeTool: tool }),
 
+  setTextColor: (color) => set({ textColor: color }),
+
+  setTextFontFamily: (font) => set({ textFontFamily: font }),
+
+  setTextFontSize: (size) => set({ textFontSize: size }),
+
   setSelectedLanguage: (language) => set({ selectedLanguage: language }),
 
   clearCurrentFile: () => {
@@ -129,6 +166,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       editorHtml: '',
       activeTool: 'select',
       selectedLanguage: 'English',
+      zoom: 100,
     })
   },
 
@@ -172,4 +210,167 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       toasts: state.toasts.filter((t) => t.id !== id),
     }))
   },
+
+  deleteSlide: (slideId) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.slides) return state
+      const slides = state.currentFile.slides.filter(s => s.id !== slideId)
+      return {
+        currentFile: { ...state.currentFile, slides }
+      }
+    })
+  },
+
+  addSlide: () => {
+    set((state) => {
+      if (!state.currentFile) return state
+      const slides = [...(state.currentFile.slides || [])]
+      const newIndex = slides.length + 1
+      slides.push({
+        id: `slide-new-${Date.now()}`,
+        pageNumber: newIndex,
+        title: `New Slide ${newIndex}`,
+        textElements: [
+          { runs: [{ text: 'New Slide Title', bold: true }], type: 'title' },
+          { runs: [{ text: 'Click to add text' }], type: 'body' }
+        ],
+        images: [],
+        fullText: 'New Slide Title\nClick to add text',
+        isNew: true
+      })
+      return {
+        currentFile: { ...state.currentFile, slides }
+      }
+    })
+  },
+
+  moveSlide: (slideId, direction) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.slides) return state
+      const slides = [...state.currentFile.slides]
+      const index = slides.findIndex(s => s.id === slideId)
+      if (index === -1) return state
+
+      const newIndex = direction === 'up' ? index - 1 : index + 1
+      if (newIndex < 0 || newIndex >= slides.length) return state
+
+      const temp = slides[index]
+      slides[index] = slides[newIndex]
+      slides[newIndex] = temp
+
+      return {
+        currentFile: { ...state.currentFile, slides }
+      }
+    })
+  },
+
+  toggleViewMode: () => {
+    set((state) => {
+      if (!state.currentFile) return state
+      return {
+        currentFile: { ...state.currentFile, viewOnly: !state.currentFile.viewOnly }
+      }
+    })
+  },
+
+  deletePage: (pageIndex) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.pageOrder) return state
+      const pageOrder = state.currentFile.pageOrder.filter((_, i) => i !== pageIndex)
+      const newCurrentPage = Math.max(1, Math.min(state.currentPage, pageOrder.length))
+      return {
+        currentFile: { ...state.currentFile, pageOrder },
+        currentPage: newCurrentPage
+      }
+    })
+  },
+
+  addPage: () => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.pageOrder) return state
+      const pageOrder = [...state.currentFile.pageOrder, -1] // -1 represents a new blank page
+      return {
+        currentFile: { ...state.currentFile, pageOrder }
+      }
+    })
+  },
+
+  movePage: (pageIndex, direction) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.pageOrder) return state
+      const pageOrder = [...state.currentFile.pageOrder]
+      const newIndex = direction === 'up' ? pageIndex - 1 : pageIndex + 1
+
+      if (newIndex < 0 || newIndex >= pageOrder.length) return state
+
+      const temp = pageOrder[pageIndex]
+      pageOrder[pageIndex] = pageOrder[newIndex]
+      pageOrder[newIndex] = temp
+
+      const newCurrentPage = state.currentPage === pageIndex + 1 ? newIndex + 1 : state.currentPage === newIndex + 1 ? pageIndex + 1 : state.currentPage
+
+      return {
+        currentFile: { ...state.currentFile, pageOrder },
+        currentPage: newCurrentPage
+      }
+    })
+  },
+
+  updatePageOrder: (pageOrder) => {
+    set((state) => {
+      if (!state.currentFile) return state
+      return {
+        currentFile: { ...state.currentFile, pageOrder }
+      }
+    })
+  },
+
+  deleteSheet: (sheetName) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.sheetOrder) return state
+      const sheetOrder = state.currentFile.sheetOrder.filter(s => s !== sheetName)
+      return {
+        currentFile: { ...state.currentFile, sheetOrder }
+      }
+    })
+  },
+
+  addSheet: (sheetName) => {
+    set((state) => {
+      if (!state.currentFile) return state
+      const sheetOrder = [...(state.currentFile.sheetOrder || []), sheetName]
+      return {
+        currentFile: { ...state.currentFile, sheetOrder }
+      }
+    })
+  },
+
+  moveSheet: (sheetName, direction) => {
+    set((state) => {
+      if (!state.currentFile || !state.currentFile.sheetOrder) return state
+      const sheetOrder = [...state.currentFile.sheetOrder]
+      const index = sheetOrder.indexOf(sheetName)
+      if (index === -1) return state
+
+      const newIndex = direction === 'up' ? index - 1 : index + 1
+      if (newIndex < 0 || newIndex >= sheetOrder.length) return state
+
+      const temp = sheetOrder[index]
+      sheetOrder[index] = sheetOrder[newIndex]
+      sheetOrder[newIndex] = temp
+
+      return {
+        currentFile: { ...state.currentFile, sheetOrder }
+      }
+    })
+  },
+
+  updateSheetOrder: (sheetOrder) => {
+    set((state) => {
+      if (!state.currentFile) return state
+      return {
+        currentFile: { ...state.currentFile, sheetOrder }
+      }
+    })
+  }
 }))

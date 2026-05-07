@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
 import JSZip from 'jszip'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { Move, Plus, Type, Trash2 } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
+import EditorNavigation from '../EditorNavigation'
+import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
 
 interface TextRun {
   text: string
@@ -52,49 +54,138 @@ interface Slide {
   height?: number
 }
 
+interface PptOverlayText {
+  id: string
+  slideIndex: number
+  xRatio: number
+  yRatio: number
+  text: string
+  fontSize: number
+  fontFamily: string
+  color: string
+}
+
 interface PowerPointEditorProps {
   file: DocumentFile
 }
 
+const arrayBufferToFile = (content: ArrayBuffer, name: string) =>
+  new File([content], name, {
+    type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  })
+
+const runText = (runs: TextRun[] = []) => runs.map((run) => run.text).join('')
+
 export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const [slides, setSlides] = useState<Slide[]>([])
+  const [editableSlides, setEditableSlides] = useState<Slide[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isLoadingEditable, setIsLoadingEditable] = useState(false)
+  const [isObjectEditMode, setIsObjectEditMode] = useState(false)
+  const [areImagesEditable, setAreImagesEditable] = useState(false)
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null)
+  const [overlayTexts, setOverlayTexts] = useState<PptOverlayText[]>([])
+  const [isAddingText, setIsAddingText] = useState(false)
+  const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
+  const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
 
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const setWordCount = useDocumentStore((state) => state.setWordCount)
   const setCharCount = useDocumentStore((state) => state.setCharCount)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const zoom = useDocumentStore((state) => state.zoom)
+  const textColor = useDocumentStore((state) => state.textColor)
+  const textFontFamily = useDocumentStore((state) => state.textFontFamily)
+  const textFontSize = useDocumentStore((state) => state.textFontSize)
+
+  const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
+
+  const loadEditableSlides = async (activate = false) => {
+    try {
+      setIsLoadingEditable(true)
+      const formData = new FormData()
+      formData.append('file', arrayBufferToFile(file.content, file.name))
+      formData.append('renderMode', 'editable')
+
+      const response = await fetch('http://localhost:5000/api/upload-pptx', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (!response.ok) return
+
+      const result = await response.json()
+      if (result.slides?.length) {
+        setEditableSlides(result.slides)
+        if (activate) {
+          setIsObjectEditMode(true)
+          setCurrentPage(1)
+        }
+      }
+    } catch (error) {
+      console.warn('Could not load editable PPTX object model.', error)
+    } finally {
+      setIsLoadingEditable(false)
+    }
+  }
 
   useEffect(() => {
     const loadPPTX = async () => {
       try {
         setIsLoading(true)
-        
-        // If Flask already parsed the slides, use them directly
+
+        // If Flask already rendered the slides, use them directly.
         if (file.slides && file.slides.length > 0) {
-          setSlides(file.slides)
-          setIsLoading(false)
-          
-          // Update word/char count from first slide
-          if (file.slides.length > 0) {
+          const hasRenderedSlides = file.slides.some((slide) => slide.imageData)
+          if (hasRenderedSlides) {
+            setSlides(file.slides)
+            loadEditableSlides(false)
             const firstSlide = file.slides[0]
             setWordCount(firstSlide.fullText?.split(/\s+/).filter((w: string) => w.length > 0).length || 0)
             setCharCount(firstSlide.fullText?.length || 0)
+            setIsLoading(false)
+            return
           }
-          return
         }
-        
+
+        // Upgrade old editable parses to pixel-perfect slide images when the backend is available.
+        try {
+          const formData = new FormData()
+          formData.append('file', arrayBufferToFile(file.content, file.name))
+          formData.append('renderMode', 'pixel')
+
+          const response = await fetch('http://localhost:5000/api/upload-pptx', {
+            method: 'POST',
+            body: formData,
+          })
+
+          if (response.ok) {
+            const result = await response.json()
+            if (result.slides?.length) {
+              setSlides(result.slides)
+              loadEditableSlides(false)
+              setWordCount(0)
+              setCharCount(0)
+              setCurrentPage(1)
+              setIsLoading(false)
+              return
+            }
+          }
+        } catch (error) {
+          console.warn('Could not render PPTX through backend; using local editable fallback.', error)
+        }
+
         // Fallback to client-side parsing
         const zip = new JSZip()
         await zip.loadAsync(file.content)
 
         let loadedSlides: Slide[] = []
-        
+
         // Get slide dimensions from presentation.xml
         let slideWidth = 9144000 // default 10 inches in EMU
         let slideHeight = 5143500 // default 5.625 inches in EMU (16:9)
-        
+
         try {
           const presFile = zip.file('ppt/presentation.xml')
           if (presFile) {
@@ -174,14 +265,14 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
     // Load ALL images from relationships (they may be in slide layouts)
     for (const [relId, imagePath] of imageRelMap.entries()) {
       if (!imagePath.includes('media')) continue // Skip non-media files
-      
+
       console.log(`Processing image from relationship: ${relId} -> ${imagePath}`)
-      
+
       try {
         // Resolve the relative path from slide folder
         // "../media/image1.png" -> "ppt/media/image1.png"
         const resolvedPath = imagePath.replace(/^\.\.\//, 'ppt/')
-        
+
         let imageFile = null
         let finalPath = ''
 
@@ -234,7 +325,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
               : ext === 'gif'
               ? 'image/gif'
               : 'image/png'
-          
+
           // Extract position and size from shapes that use this image
           let x = 0 // percent of slide width
           let y = 0 // percent of slide height
@@ -252,12 +343,12 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             if (pic.includes(`r:embed="${relId}"`) || pic.includes(`r:link="${relId}"`)) {
               picIndex++
               console.log(`Found picture ${picIndex} using image ${relId}`)
-              
+
               // Extract position from xfrm (transform)
               const xfrmMatch = /<p:xfrm>[\s\S]*?<\/p:xfrm>/.exec(pic)
               if (xfrmMatch) {
                 const xfrm = xfrmMatch[0]
-                
+
                 // Extract off (offset) in EMU
                 const offMatch = /<a:off x="(\d+)" y="(\d+)"/.exec(xfrm)
                 if (offMatch) {
@@ -267,7 +358,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                   x = (offsetXEmu / slideWidth) * 100
                   y = (offsetYEmu / slideHeight) * 100
                 }
-                
+
                 // Extract ext (extent - size) in EMU
                 const extMatch = /<a:ext cx="(\d+)" cy="(\d+)"/.exec(xfrm)
                 if (extMatch) {
@@ -278,11 +369,11 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                   height = (extYEmu / slideHeight) * 100
                 }
               }
-              
+
               zIndex = picIndex
             }
           }
-          
+
           console.log(`✓ Loaded image: ${finalPath} at (${x.toFixed(1)}%, ${y.toFixed(1)}%) size ${width.toFixed(1)}% x ${height.toFixed(1)}%`)
           images.push({
             id: relId,
@@ -542,6 +633,9 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   ]
 
   const currentSlide = slides[currentPage - 1]
+  const currentEditableSlide = editableSlides[currentPage - 1]
+  const activeSlide = isObjectEditMode && currentEditableSlide ? currentEditableSlide : currentSlide
+  const currentSlideOverlays = overlayTexts.filter((item) => item.slideIndex === currentPage - 1)
 
   const handleTextElementEdit = (elementIndex: number, text: string) => {
     setSlides((prevSlides) => {
@@ -578,22 +672,314 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
     })
   }
 
+  const handleAddSlide = () => {
+    setSlides((prevSlides) => {
+      const nextPage = prevSlides.length + 1
+      const newSlide: Slide = {
+        id: `slide-new-${Date.now()}`,
+        title: `New Slide ${nextPage}`,
+        textElements: [
+          { runs: [{ text: 'New Slide Title', bold: true }], type: 'title' },
+          { runs: [{ text: 'Click to add text' }], type: 'body' },
+        ],
+        images: [],
+        fullText: 'New Slide Title\nClick to add text',
+        backgroundColor: '#ffffff',
+        width: 9144000,
+        height: 5143500,
+      }
+
+      setCurrentPage(nextPage)
+      return [...prevSlides, newSlide]
+    })
+  }
+
+  const handleDeleteSlide = (slideId: string) => {
+    setSlides((prevSlides) => {
+      const nextSlides = prevSlides.filter((slide) => slide.id !== slideId)
+      const nextPage = Math.max(1, Math.min(currentPage, nextSlides.length))
+      setCurrentPage(nextPage)
+      return nextSlides
+    })
+  }
+
   const handleSlideChange = (pageNum: number) => {
     setCurrentPage(pageNum)
-    if (slides[pageNum - 1]) {
-      const slide = slides[pageNum - 1]
-      setWordCount(slide.fullText.split(/\s+/).filter((w) => w.length > 0).length)
-      setCharCount(slide.fullText.length)
+    setSelectedImageIndex(null)
+    setSelectedOverlayId(null)
+    const slideIndex = pageNum - 1
+    const slide = slides[slideIndex]
+    if (slide) {
+      setWordCount(slide.fullText?.split(/\s+/).filter((w: string) => w.length > 0).length || 0)
+      setCharCount(slide.fullText?.length || 0)
     }
   }
 
-  const slideItems: PageRailItem[] = slides.map((slide, index) => ({
+  const effectiveSlides = slides
+
+  const slideItems: PageRailItem[] = effectiveSlides.map((slide, index) => ({
     id: String(index + 1),
     label: `Slide ${index + 1}`,
     subtitle: slide.title,
     thumbnail: slide.thumbnailData ?? null,
     onClick: () => handleSlideChange(index + 1),
+    onDelete: !file.viewOnly ? () => handleDeleteSlide(slide.id) : undefined,
   }))
+
+  const handleReorderSlides = (fromIndex: number, toIndex: number) => {
+    const newSlides = [...slides]
+    const removedSlides = newSlides.splice(fromIndex, 1)
+    newSlides.splice(toIndex, 0, removedSlides[0])
+
+    // Update the file with new order
+    setSlides(newSlides)
+
+    // Update current page if needed
+    if (currentPage === fromIndex + 1) {
+      handleSlideChange(toIndex + 1)
+    } else if (currentPage > fromIndex && currentPage <= toIndex) {
+      handleSlideChange(currentPage - 1)
+    } else if (currentPage >= toIndex && currentPage < fromIndex) {
+      handleSlideChange(currentPage + 1)
+    }
+  }
+
+  const handleTextBoxEdit = (boxIndex: number, text: string) => {
+    setEditableSlides((previousSlides) => {
+      const slideIndex = currentPage - 1
+      const slide = previousSlides[slideIndex]
+      const textBox = slide?.textBoxes?.[boxIndex]
+      if (!slide || !textBox) return previousSlides
+
+      const nextSlides = [...previousSlides]
+      const nextSlide = { ...slide }
+      const textBoxes = [...(nextSlide.textBoxes || [])]
+      const nextBox = { ...textBox }
+      nextBox.runs = [{ ...(nextBox.runs[0] || {}), text }]
+      textBoxes[boxIndex] = nextBox
+      nextSlide.textBoxes = textBoxes
+      nextSlide.fullText = textBoxes.map((box) => runText(box.runs)).join('\n')
+      nextSlides[slideIndex] = nextSlide
+
+      setWordCount(nextSlide.fullText.split(/\s+/).filter((word) => word.length > 0).length)
+      setCharCount(nextSlide.fullText.length)
+      return nextSlides
+    })
+  }
+
+  const handleDeleteTextBox = (boxIndex: number) => {
+    setEditableSlides((previousSlides) => {
+      const slideIndex = currentPage - 1
+      const slide = previousSlides[slideIndex]
+      if (!slide?.textBoxes) return previousSlides
+
+      const nextSlides = [...previousSlides]
+      const nextSlide = { ...slide }
+      const textBoxes = slide.textBoxes.filter((_, index) => index !== boxIndex)
+      nextSlide.textBoxes = textBoxes
+      nextSlide.fullText = textBoxes.map((box) => runText(box.runs)).join('\n')
+      nextSlides[slideIndex] = nextSlide
+
+      setWordCount(nextSlide.fullText.split(/\s+/).filter((word) => word.length > 0).length)
+      setCharCount(nextSlide.fullText.length)
+      return nextSlides
+    })
+  }
+
+  const handleDeleteImage = (imageIndex: number) => {
+    setEditableSlides((previousSlides) => {
+      const slideIndex = currentPage - 1
+      const slide = previousSlides[slideIndex]
+      if (!slide) return previousSlides
+
+      const nextSlides = [...previousSlides]
+      nextSlides[slideIndex] = {
+        ...slide,
+        images: slide.images.filter((_, index) => index !== imageIndex),
+      }
+      return nextSlides
+    })
+    setSelectedImageIndex(null)
+  }
+
+  const beginImageMove = (event: React.PointerEvent<HTMLButtonElement>, imageIndex: number) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedImageIndex(imageIndex)
+
+    const slideElement = event.currentTarget.closest('[data-ppt-slide="true"]') as HTMLElement | null
+    if (!slideElement) return
+
+    const moveImage = (moveEvent: PointerEvent) => {
+      const rect = slideElement.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+
+      const x = Math.min(Math.max(((moveEvent.clientX - rect.left) / rect.width) * 100, 0), 100)
+      const y = Math.min(Math.max(((moveEvent.clientY - rect.top) / rect.height) * 100, 0), 100)
+
+      setEditableSlides((previousSlides) => {
+        const slideIndex = currentPage - 1
+        const slide = previousSlides[slideIndex]
+        const image = slide?.images[imageIndex]
+        if (!slide || !image) return previousSlides
+
+        const nextSlides = [...previousSlides]
+        const nextImages = [...slide.images]
+        nextImages[imageIndex] = { ...image, x, y }
+        nextSlides[slideIndex] = { ...slide, images: nextImages }
+        return nextSlides
+      })
+    }
+
+    const stopMoving = () => {
+      window.removeEventListener('pointermove', moveImage)
+      window.removeEventListener('pointerup', stopMoving)
+    }
+
+    window.addEventListener('pointermove', moveImage)
+    window.addEventListener('pointerup', stopMoving)
+  }
+
+  const handleSlideCanvasClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if ((!isAddingText && activeTool !== 'text') || file.viewOnly) {
+      setSelectedImageIndex(null)
+      return
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return
+
+    const xRatio = Math.min(Math.max((event.clientX - rect.left) / rect.width, 0), 1)
+    const yRatio = Math.min(Math.max((event.clientY - rect.top) / rect.height, 0), 1)
+
+    if (isObjectEditMode && currentEditableSlide) {
+      const x = xRatio * 100
+      const y = yRatio * 100
+      setEditableSlides((previousSlides) => {
+        const slideIndex = currentPage - 1
+        const slide = previousSlides[slideIndex]
+        if (!slide) return previousSlides
+
+        const nextSlides = [...previousSlides]
+        const nextSlide = { ...slide }
+        const textBoxes = [...(nextSlide.textBoxes || [])]
+        textBoxes.push({
+          runs: [{ text: 'New text', fontSize: textFontSize, color: textColor }],
+          type: 'body',
+          x,
+          y,
+          width: 28,
+          height: 10,
+        })
+        nextSlide.textBoxes = textBoxes
+        nextSlide.fullText = textBoxes.map((box) => runText(box.runs)).join('\n')
+        nextSlides[slideIndex] = nextSlide
+        return nextSlides
+      })
+      setIsAddingText(false)
+      return
+    }
+
+    const id = `ppt-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+
+    setOverlayTexts((previous) => [
+      ...previous,
+      {
+        id,
+        slideIndex: currentPage - 1,
+        xRatio,
+        yRatio,
+        text: 'Edit text',
+        fontSize: textFontSize,
+        fontFamily: textFontFamily,
+        color: textColor,
+      },
+    ])
+    setSelectedOverlayId(id)
+    if (isAddingText) {
+      setIsAddingText(false)
+    }
+  }
+
+  const updateOverlayText = (id: string, patch: Partial<PptOverlayText>) => {
+    setOverlayTexts((previous) => previous.map((item) => (item.id === id ? { ...item, ...patch } : item)))
+  }
+
+  useEffect(() => {
+    const changed =
+      lastToolbarFormatRef.current.textColor !== textColor ||
+      lastToolbarFormatRef.current.textFontFamily !== textFontFamily ||
+      lastToolbarFormatRef.current.textFontSize !== textFontSize
+
+    lastToolbarFormatRef.current = { textColor, textFontFamily, textFontSize }
+
+    if (changed && selectedOverlayId) {
+      updateOverlayText(selectedOverlayId, {
+        color: textColor,
+        fontFamily: textFontFamily,
+        fontSize: textFontSize,
+      })
+    }
+  }, [selectedOverlayId, textColor, textFontFamily, textFontSize])
+
+  const removeOverlayText = (id: string) => {
+    setOverlayTexts((previous) => previous.filter((item) => item.id !== id))
+    if (selectedOverlayId === id) {
+      setSelectedOverlayId(null)
+    }
+  }
+
+  const handleOverlayTextInput = (id: string, element: HTMLElement) => {
+    updateOverlayText(id, { text: element.innerText })
+  }
+
+  const beginOverlayMove = (event: React.PointerEvent<HTMLButtonElement>, id: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    setSelectedOverlayId(id)
+
+    const slideElement = event.currentTarget.closest('[data-ppt-slide="true"]') as HTMLElement | null
+    if (!slideElement) return
+
+    const moveOverlay = (moveEvent: PointerEvent) => {
+      const rect = slideElement.getBoundingClientRect()
+      if (rect.width <= 0 || rect.height <= 0) return
+
+      updateOverlayText(id, {
+        xRatio: Math.min(Math.max((moveEvent.clientX - rect.left) / rect.width, 0), 1),
+        yRatio: Math.min(Math.max((moveEvent.clientY - rect.top) / rect.height, 0), 1),
+      })
+    }
+
+    const stopMoving = () => {
+      window.removeEventListener('pointermove', moveOverlay)
+      window.removeEventListener('pointerup', stopMoving)
+    }
+
+    window.addEventListener('pointermove', moveOverlay)
+    window.addEventListener('pointerup', stopMoving)
+  }
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const activeElement = document.activeElement
+      const isEditingText = activeElement instanceof HTMLElement && activeElement.isContentEditable
+      if (isEditingText || file.viewOnly) return
+      if (!selectedOverlayId && (!areImagesEditable || selectedImageIndex === null)) return
+
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        if (selectedOverlayId) {
+          removeOverlayText(selectedOverlayId)
+        } else if (areImagesEditable && selectedImageIndex !== null) {
+          handleDeleteImage(selectedImageIndex)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [areImagesEditable, file.viewOnly, selectedImageIndex, selectedOverlayId])
 
   if (isLoading) {
     return (
@@ -606,41 +992,267 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
     )
   }
 
+  const isRenderedSlide = Boolean(activeSlide?.imageData) && !isObjectEditMode
+  const canObjectEdit = editableSlides.length > 0
+  const slideZoom = zoom / 100
+  const selectedOverlay = selectedOverlayId
+    ? overlayTexts.find((item) => item.id === selectedOverlayId)
+    : null
+
   return (
     <div className="flex-1 flex bg-gray-100 overflow-hidden">
-      <PageRail
-        title="SLIDES"
-        items={slideItems}
-        activeId={String(currentPage)}
-        accentColor="#dc2626"
-      />
-
       {/* Main slide view */}
-      <div className="flex-1 flex flex-col items-center justify-center overflow-auto bg-gray-100 p-6">
-        {currentSlide ? (
+      <div className="flex-1 flex flex-col items-center overflow-auto bg-gray-100 p-2 sm:p-4 md:p-5 relative">
+        {/* Mode Toggle Overlay */}
+        <div className="absolute left-2 right-2 top-2 z-20 flex flex-wrap justify-end gap-2 sm:left-auto sm:right-5 sm:top-4">
+          {!file.viewOnly && (
+            <button
+              onClick={() => {
+                if (canObjectEdit) {
+                  setIsObjectEditMode((value) => !value)
+                } else {
+                  loadEditableSlides(true)
+                }
+              }}
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                isObjectEditMode
+                  ? 'border-red-600 bg-red-600 text-white'
+                  : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
+              }`}
+            >
+              {isLoadingEditable ? 'Loading objects...' : isObjectEditMode ? 'Preview' : 'Edit Objects'}
+            </button>
+          )}
+
+          {!file.viewOnly && (isRenderedSlide || isObjectEditMode) && (
+            <button
+              onClick={() => setIsAddingText((value) => !value)}
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                isAddingText
+                  ? 'border-red-600 bg-red-600 text-white'
+                  : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
+              }`}
+            >
+              <Type size={14} />
+              {isAddingText ? 'Click slide' : 'Add Text'}
+            </button>
+          )}
+
+          {!file.viewOnly && isObjectEditMode && (
+            <button
+              onClick={() => {
+                setAreImagesEditable((value) => !value)
+                setSelectedImageIndex(null)
+              }}
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                areImagesEditable
+                  ? 'border-amber-500 bg-amber-500 text-white'
+                  : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
+              }`}
+            >
+              {areImagesEditable ? 'Images Editable' : 'Images Locked'}
+            </button>
+          )}
+
+          {!isRenderedSlide && (
+            <button
+              onClick={() => toggleViewMode()}
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${
+                file.viewOnly
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
+              }`}
+            >
+              {file.viewOnly ? 'View mode' : 'Edit mode'}
+            </button>
+          )}
+        </div>
+
+        {activeSlide ? (
           <div
-            className="bg-white rounded-lg shadow-2xl flex flex-col relative overflow-hidden"
+            className="bg-white rounded-lg shadow-2xl relative overflow-hidden"
+            data-ppt-slide="true"
+            onClick={handleSlideCanvasClick}
             style={{
               aspectRatio: '16 / 9',
-              width: '1000px',
-              maxWidth: '90vw',
-              maxHeight: '90vh',
-              backgroundColor: currentSlide.backgroundColor || '#ffffff',
+              width: `min(${1180 * slideZoom}px, calc(100vw - 1rem))`,
+              maxWidth: 'none',
+              maxHeight: 'none',
+              backgroundColor: activeSlide.backgroundColor || '#ffffff',
             }}
           >
-            {currentSlide.imageData ? (
-              <img
-                src={currentSlide.imageData}
-                alt={currentSlide.title}
-                className="absolute inset-0 w-full h-full object-contain bg-white"
-              />
+            {isRenderedSlide && activeSlide.imageData ? (
+              <>
+                <img
+                  src={activeSlide.imageData}
+                  alt={activeSlide.title}
+                  className="h-full w-full object-contain bg-white"
+                />
+                {currentSlideOverlays.map((overlay) => {
+                  const isSelected = selectedOverlayId === overlay.id
+
+                  return (
+                    <div
+                      key={overlay.id}
+                      className="absolute"
+                      style={{
+                        left: `${overlay.xRatio * 100}%`,
+                        top: `${overlay.yRatio * 100}%`,
+                        transform: 'translate(-2px, -50%)',
+                      }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div
+                        contentEditable={!file.viewOnly}
+                        suppressContentEditableWarning
+                        spellCheck={false}
+                        onFocus={() => setSelectedOverlayId(overlay.id)}
+                        onClick={() => setSelectedOverlayId(overlay.id)}
+                        onInput={(event) => handleOverlayTextInput(overlay.id, event.currentTarget)}
+                        className={`min-w-[80px] max-w-[420px] whitespace-pre-wrap px-1 font-semibold leading-tight outline-none ${
+                          isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''
+                        }`}
+                        style={{
+                          color: overlay.color,
+                          fontSize: `${overlay.fontSize}px`,
+                          fontFamily: overlay.fontFamily,
+                        }}
+                      >
+                        {overlay.text}
+                      </div>
+                      {isSelected && !file.viewOnly && (
+                        <div className="absolute -top-7 left-0 flex items-center gap-1 rounded bg-white px-1 py-0.5 shadow">
+                          <button
+                            onPointerDown={(event) => beginOverlayMove(event, overlay.id)}
+                            className="rounded p-1 text-gray-700 hover:bg-gray-100"
+                            title="Move text"
+                          >
+                            <Move size={12} />
+                          </button>
+                          <button
+                            onClick={() => removeOverlayText(overlay.id)}
+                            className="rounded bg-red-600 p-1 text-white hover:bg-red-700"
+                            title="Delete text"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </>
+            ) : isObjectEditMode && currentEditableSlide ? (
+              <>
+                {currentEditableSlide.images.map((img, idx) => {
+                  const isSelected = selectedImageIndex === idx
+
+                  return (
+                    <div
+                      key={`editable-img-${idx}`}
+                      className={`group absolute ${areImagesEditable ? 'pointer-events-auto' : 'pointer-events-none'}`}
+                      style={{
+                        left: `${img.x || 0}%`,
+                        top: `${img.y || 0}%`,
+                        width: `${img.width || 15}%`,
+                        height: `${img.height || 15}%`,
+                        zIndex: img.zIndex || 1,
+                      }}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        if (areImagesEditable) {
+                          setSelectedImageIndex(idx)
+                        }
+                      }}
+                    >
+                      <img
+                        src={img.data}
+                        alt=""
+                        className={`h-full w-full object-contain ${
+                          areImagesEditable
+                            ? isSelected
+                              ? 'outline outline-2 outline-amber-500'
+                              : 'outline outline-1 outline-transparent group-hover:outline-amber-400'
+                            : ''
+                        }`}
+                        draggable={false}
+                      />
+                      {areImagesEditable && isSelected && (
+                        <div className="absolute -top-7 left-0 flex items-center gap-1 rounded bg-white px-1 py-0.5 shadow">
+                          <button
+                            onPointerDown={(event) => beginImageMove(event, idx)}
+                            className="rounded p-1 text-gray-700 hover:bg-gray-100"
+                            title="Move image"
+                          >
+                            <Move size={12} />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteImage(idx)}
+                            className="rounded bg-red-600 p-1 text-white hover:bg-red-700"
+                            title="Delete image"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
+                {currentEditableSlide.textBoxes?.map((box, index) => {
+                  const text = runText(box.runs)
+                  const firstRun = box.runs[0] || {}
+                  return (
+                    <div
+                      key={`textbox-${index}`}
+                      className="group absolute z-20 rounded border border-transparent hover:border-red-400 focus-within:border-red-500"
+                      style={{
+                        left: `${box.x || 0}%`,
+                        top: `${box.y || 0}%`,
+                        width: `${box.width || 24}%`,
+                        minHeight: `${box.height || 8}%`,
+                        textAlign:
+                          box.alignment === 'ctr'
+                            ? 'center'
+                            : box.alignment === 'r'
+                            ? 'right'
+                            : 'left',
+                      }}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div
+                        contentEditable
+                        suppressContentEditableWarning
+                        spellCheck={false}
+                        className="h-full min-h-[24px] w-full whitespace-pre-wrap px-1 py-0.5 outline-none"
+                        style={{
+                          color: firstRun.color || '#111827',
+                          fontSize: `${Math.max(10, Number(firstRun.fontSize || 18))}px`,
+                          fontWeight: firstRun.bold ? '700' : '400',
+                          fontStyle: firstRun.italic ? 'italic' : 'normal',
+                        }}
+                        onBlur={(event) => handleTextBoxEdit(index, event.currentTarget.innerText)}
+                      >
+                        {text}
+                      </div>
+                      <button
+                        onClick={() => handleDeleteTextBox(index)}
+                        className="absolute -right-3 -top-3 hidden rounded-full bg-red-600 p-1 text-white shadow hover:bg-red-700 group-hover:block"
+                        title="Delete text"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  )
+                })}
+              </>
             ) : (
               <>
                 {/* Slide header bar */}
                 <div className="h-1.5 bg-gradient-to-r from-red-500 via-red-600 to-orange-500"></div>
 
                 {/* Fallback legacy text/image rendering */}
-                {currentSlide.images.map((img, idx) => (
+                {activeSlide.images.map((img, idx) => (
                   <img
                     key={`img-${idx}`}
                     src={img.data}
@@ -659,9 +1271,9 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                   />
                 ))}
 
-                <div className="absolute inset-0 z-10 pointer-events-none">
+                <div className="absolute inset-0 z-10">
                   <div className="absolute inset-0 px-12 py-10 overflow-hidden">
-                    {currentSlide.textElements.map((textElement, index) => (
+                    {activeSlide.textElements.map((textElement, index) => (
                       <div
                         key={index}
                         className={`${
@@ -692,10 +1304,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                           <div className="flex-1 min-w-0">
                             {textElement.type === 'title' && (
                               <h1
-                                contentEditable
+                                contentEditable={!file.viewOnly}
                                 suppressContentEditableWarning
                                 onBlur={(e) => handleTextElementEdit(index, e.currentTarget.textContent || '')}
-                                className={activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text'}
+                                className={file.viewOnly ? '' : (activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text')}
                                 style={{ fontSize: '2rem', fontWeight: 'bold', color: '#1f2937', lineHeight: '1.2', wordWrap: 'break-word' }}
                               >
                                 {textElement.runs.map((run, ridx) => (
@@ -715,10 +1327,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                             )}
                             {textElement.type === 'subtitle' && (
                               <h2
-                                contentEditable
+                                contentEditable={!file.viewOnly}
                                 suppressContentEditableWarning
                                 onBlur={(e) => handleTextElementEdit(index, e.currentTarget.textContent || '')}
-                                className={activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text'}
+                                className={file.viewOnly ? '' : (activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text')}
                                 style={{ fontSize: '1.5rem', fontWeight: '600', color: '#374151', lineHeight: '1.3', wordWrap: 'break-word' }}
                               >
                                 {textElement.runs.map((run, ridx) => (
@@ -738,10 +1350,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                             )}
                             {textElement.type !== 'title' && textElement.type !== 'subtitle' && (
                               <p
-                                contentEditable
+                                contentEditable={!file.viewOnly}
                                 suppressContentEditableWarning
                                 onBlur={(e) => handleTextElementEdit(index, e.currentTarget.textContent || '')}
-                                className={activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text'}
+                                className={file.viewOnly ? '' : (activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image' ? 'cursor-crosshair' : 'cursor-text')}
                                 style={{ fontSize: '1rem', color: '#1f2937', lineHeight: '1.5', fontWeight: 'normal', wordWrap: 'break-word' }}
                               >
                                 {textElement.runs.map((run, ridx) => (
@@ -768,10 +1380,6 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
               </>
             )}
 
-            {/* Slide footer */}
-            <div className="border-t border-gray-200 px-12 py-4 text-right text-sm text-gray-500 bg-gradient-to-r from-gray-50 to-white">
-              Slide {currentPage} of {slides.length}
-            </div>
           </div>
         ) : (
           <div className="text-center text-gray-600">No slides available</div>
@@ -779,31 +1387,98 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
 
         {/* Navigation controls */}
         {currentSlide && (
-          <div className="flex gap-3 mt-8">
+          <EditorNavigation
+            current={currentPage}
+            total={slides.length}
+            onPrevious={() => handleSlideChange(Math.max(1, currentPage - 1))}
+            onNext={() => handleSlideChange(Math.min(slides.length, currentPage + 1))}
+            className="sticky bottom-0 z-20 mt-4 border-t border-gray-200 bg-white/95 backdrop-blur"
+          />
+        )}
+
+        {selectedOverlayId && !file.viewOnly && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              Font
+              <select
+                value={selectedOverlay?.fontFamily || 'Calibri'}
+                onChange={(event) => updateOverlayText(selectedOverlayId, { fontFamily: event.target.value })}
+                className="w-36 rounded border px-2 py-1"
+              >
+                {EDITOR_FONT_FAMILIES.map((font) => (
+                  <option key={font} value={font} style={{ fontFamily: font }}>
+                    {font}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              Size
+              <select
+                value={selectedOverlay?.fontSize || 24}
+                onChange={(event) =>
+                  updateOverlayText(selectedOverlayId, {
+                    fontSize: parseInt(event.target.value, 10),
+                  })
+                }
+                className="w-20 rounded border px-2 py-1"
+              >
+                {EDITOR_FONT_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              Color
+              <input
+                type="color"
+                value={selectedOverlay?.color || '#111827'}
+                onChange={(event) => updateOverlayText(selectedOverlayId, { color: event.target.value })}
+                className="h-8 w-10 rounded border p-0"
+              />
+            </label>
+            <div className="flex flex-wrap gap-1">
+              {EDITOR_COLOR_PALETTE.map((color) => (
+                <button
+                  key={color}
+                  onClick={() => updateOverlayText(selectedOverlayId, { color })}
+                  className="h-6 w-6 rounded border border-gray-300 shadow-sm"
+                  style={{ backgroundColor: color }}
+                  title={color}
+                  aria-label={color}
+                />
+              ))}
+            </div>
             <button
-              onClick={() => handleSlideChange(Math.max(1, currentPage - 1))}
-              disabled={currentPage === 1}
-              className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all text-white font-medium text-sm shadow-md hover:shadow-lg"
-              title="Previous slide"
+              onClick={() => removeOverlayText(selectedOverlayId)}
+              className="flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
             >
-              <ChevronLeft size={18} />
-              Previous
-            </button>
-            <span className="px-4 py-2.5 bg-gray-200 rounded-lg font-medium text-sm text-gray-700">
-              {currentPage} / {slides.length}
-            </span>
-            <button
-              onClick={() => handleSlideChange(Math.min(slides.length, currentPage + 1))}
-              disabled={currentPage === slides.length}
-              className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-all text-white font-medium text-sm shadow-md hover:shadow-lg"
-              title="Next slide"
-            >
-              Next
-              <ChevronRight size={18} />
+              <Trash2 size={14} />
+              Delete Text
             </button>
           </div>
         )}
       </div>
+
+      <PageRail
+        title="SCREENS"
+        items={slideItems}
+        activeId={String(currentPage)}
+        accentColor="#dc2626"
+        side="right"
+        onReorder={!file.viewOnly ? handleReorderSlides : undefined}
+        footer={!file.viewOnly && !isRenderedSlide && (
+          <button
+            onClick={handleAddSlide}
+            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg border-2 border-dashed border-gray-300 text-gray-500 hover:border-red-500 hover:text-red-500 transition-all font-medium text-xs bg-white"
+          >
+            <Plus size={14} />
+            Add New Slide
+          </button>
+        )}
+      />
     </div>
   )
 }

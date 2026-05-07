@@ -1,6 +1,7 @@
 // src/components/editors/ImageEditor.tsx
 import { useState, useEffect, useRef } from 'react';
 import { DocumentFile, useDocumentStore } from '../../store';
+import EditorNavigation from '../EditorNavigation';
 
 
 interface ImageEditorProps {
@@ -101,6 +102,13 @@ export default function ImageEditor({ file }: ImageEditorProps) {
           />
         </div>
       </div>
+      <EditorNavigation
+        current={1}
+        total={1}
+        onPrevious={() => undefined}
+        onNext={() => undefined}
+        className="shrink-0 border-t border-gray-200 bg-gray-100"
+      />
     </div>
   );
 }

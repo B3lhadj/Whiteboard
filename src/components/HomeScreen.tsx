@@ -1,25 +1,37 @@
 import { useState, useRef } from 'react'
-import { X, Settings, FileText, FileSpreadsheet, Presentation } from 'lucide-react'
-import { useDocumentStore, DocumentFile } from '../store'
+import { X, FileText, FileSpreadsheet, Presentation, Image as ImageIcon } from 'lucide-react'
+import { useDocumentStore, DocumentFile, FileType } from '../store'
 import { getFileType, formatFileSize, generateFileId } from '../utils'
 import { convertPdfToDocx, isPdfConversionSuccessful } from '../utils/pdfConverter'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
+import Ribbon from './Ribbon'
 import ThemePicker from './ThemePicker'
 import imageIcon from '../assets/image.png'
 import pdfIcon from '../assets/pdf.png'
 import signIcon from '../assets/Sign.png'
 import whiteboardIcon from '../assets/Vector.png'
 
+const HOME_DEFAULT_COLOR = '#2e9e44'
+
 export default function HomeScreen() {
   const [showThemePicker, setShowThemePicker] = useState(false)
-  const [pptxMode] = useState<'pixel' | 'editable'>('editable')
+  const [selectedUploadType, setSelectedUploadType] = useState<FileType>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const setCurrentFile = useDocumentStore((state) => state.setCurrentFile)
   const addRecentFile = useDocumentStore((state) => state.addRecentFile)
   const recentFiles = useDocumentStore((state) => state.recentFiles)
   const removeRecentFile = useDocumentStore((state) => state.removeRecentFile)
 
-  const openFileDialog = (accept: string) => {
+  const uploadOptions = [
+    { label: 'Word', type: 'docx' as FileType, accept: '.docx', icon: <FileText size={18} /> },
+    { label: 'PDF', type: 'pdf' as FileType, accept: '.pdf', icon: <img src={pdfIcon} alt="" className="h-5 w-5" /> },
+    { label: 'PowerPoint', type: 'pptx' as FileType, accept: '.pptx', icon: <Presentation size={18} /> },
+    { label: 'Excel', type: 'xlsx' as FileType, accept: '.xlsx,.xlsm,.xls', icon: <FileSpreadsheet size={18} /> },
+    { label: 'Image', type: 'image' as FileType, accept: '.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', icon: <ImageIcon size={18} /> },
+  ]
+
+  const openFileDialog = (accept: string, type: FileType = selectedUploadType) => {
+    setSelectedUploadType(type)
     if (fileInputRef.current) {
       fileInputRef.current.accept = accept
       fileInputRef.current.value = ''
@@ -27,157 +39,117 @@ export default function HomeScreen() {
     }
   }
 
-
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.currentTarget.files || [])
     files.forEach((file) => handleFile(file))
+    e.currentTarget.value = ''
   }
 
   const handleFile = async (file: File) => {
     const fileType = getFileType(file)
     if (!fileType) {
-      showErrorToast('Unsupported file type. Please upload PDF, DOCX, PPTX, or XLSX.')
+      showErrorToast('Unsupported file type. Please upload PDF, DOCX, PPTX, XLSX, XLSM, XLS, or an image.')
       return
     }
+    setSelectedUploadType(fileType)
 
-    // First, read file as ArrayBuffer (for fallback parsing or non-PPTX files)
     const reader = new FileReader()
     reader.onload = async (e) => {
       const content = e.target?.result as ArrayBuffer
 
-      // PDF -> Word workflow: Try frontend first (faster), then fallback to backend
       if (fileType === 'pdf') {
         let docxBlob: Blob | null = null
         let usedFrontend = false
+        const pdfTarget = 'docx'
+
         try {
-          console.log(`[1/2] Attempting frontend PDF to DOCX conversion for "${file.name}"...`)
-          
-          // Try frontend conversion first
+          console.log(`[1/2] Attempting ${pdfTarget.toUpperCase()} conversion for "${file.name}"...`)
+
           try {
             docxBlob = await convertPdfToDocx(content, file.name)
-            
-            // Verify conversion was successful
             const isSuccessful = await isPdfConversionSuccessful(content)
             if (isSuccessful && docxBlob.size > 0) {
               usedFrontend = true
-              console.log(`✅ Frontend conversion successful: ${(docxBlob.size / 1024).toFixed(2)}KB`)
+              console.log(`Frontend conversion successful: ${(docxBlob.size / 1024).toFixed(2)}KB`)
             } else {
-              console.warn('Frontend conversion produced minimal output, will try backend...')
               docxBlob = null
             }
           } catch (frontendError) {
             console.warn('Frontend conversion failed, will attempt backend fallback:', frontendError)
           }
-          
-          // If frontend failed, try backend
+
           if (!docxBlob) {
-            console.log('[2/2] Attempting backend PDF to DOCX conversion...')
-            
-            // Check if backend is available
-            try {
-              const formData = new FormData()
-              formData.append('file', file)
+            console.log(`[2/2] Attempting backend PDF to ${pdfTarget.toUpperCase()} conversion...`)
 
-              const response = await fetch('http://localhost:5000/api/pdf-to-word', {
-                method: 'POST',
-                body: formData,
-              })
+            const formData = new FormData()
+            formData.append('file', file)
 
-              if (!response.ok) {
-                let errorMessage = 'PDF to Word conversion failed'
-                try {
-                  const error = await response.json()
-                  
-                  if (error.errorCode === 'INVALID_FILE_TYPE') {
-                    errorMessage = `Invalid file type: ${error.error}`
-                  } else if (error.errorCode === 'FILE_TOO_LARGE') {
-                    errorMessage = 'File is too large. Maximum size is 50MB.'
-                  } else if (error.errorCode === 'EMPTY_FILE') {
-                    errorMessage = 'The PDF file is empty.'
-                  } else if (error.errorCode === 'SAVE_ERROR') {
-                    errorMessage = 'Failed to save the uploaded file. Please try again.'
-                  } else if (error.errorCode === 'CONVERSION_ERROR') {
-                    errorMessage = `Backend conversion failed: ${error.error}`
-                  } else if (error.errorCode === 'NO_FILE') {
-                    errorMessage = 'No file was provided.'
-                  } else if (error.error) {
-                    errorMessage = error.error
-                  }
-                } catch {
-                  errorMessage += `: ${response.status} ${response.statusText}`
-                }
-                
-                showErrorToast(errorMessage)
-                console.error('Backend PDF conversion error:', { status: response.status, errorMessage })
-                return
+            const response = await fetch('http://localhost:5000/api/pdf-to-word', {
+              method: 'POST',
+              body: formData,
+            })
+
+            if (!response.ok) {
+              let errorMessage = 'PDF to Word conversion failed'
+              try {
+                const error = await response.json()
+                errorMessage = error.error || errorMessage
+              } catch {
+                errorMessage += `: ${response.status} ${response.statusText}`
               }
 
-              const result = await response.json()
-              
-              if (!result.success) {
-                showErrorToast(`Backend conversion failed: ${result.error || 'Unknown error'}`)
-                return
-              }
-              
-              console.log(`✅ Backend conversion successful`)
-              
-              // Log conversion metrics
-              if (result.metadata) {
-                console.log('PDF Conversion Metrics (Backend):', {
-                  pages: result.metadata.pages,
-                  originalSize: formatFileSize(result.metadata.originalSize),
-                  convertedSize: formatFileSize(result.metadata.convertedSize),
-                  processTime: `${result.metadata.processTime}s`,
-                })
-              }
-              
-              const binaryString = atob(result.docxBase64)
-              const bytes = new Uint8Array(binaryString.length)
-              for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i)
-              }
-              
-              docxBlob = new Blob([bytes], {
-                type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-              })
-            } catch (backendError) {
-              if (backendError instanceof Error) {
-                if (backendError.message.includes('Failed to fetch')) {
-                  showErrorToast(
-                    'Connection error: Make sure the Flask backend is running on http://localhost:5000'
-                  )
-                } else {
-                  showErrorToast(`Backend connection error: ${backendError.message}`)
-                }
-              } else {
-                showErrorToast('Could not reach backend service for PDF conversion.')
-              }
-              console.error('Backend connection error:', backendError)
+              showErrorToast(errorMessage)
+              console.error('Backend PDF conversion error:', { status: response.status, errorMessage })
               return
             }
+
+            const result = await response.json()
+            if (!result.success) {
+              showErrorToast(`Backend conversion failed: ${result.error || 'Unknown error'}`)
+              return
+            }
+
+            console.log('Backend conversion successful')
+
+            if (result.metadata) {
+              console.log('PDF Conversion Metrics (Backend):', {
+                pages: result.metadata.pages,
+                originalSize: formatFileSize(result.metadata.originalSize),
+                convertedSize: formatFileSize(result.metadata.convertedSize),
+                processTime: `${result.metadata.processTime}s`,
+              })
+            }
+
+            const binaryString = atob(result.docxBase64)
+            const bytes = new Uint8Array(binaryString.length)
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i)
+            }
+
+            docxBlob = new Blob([bytes], {
+              type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            })
           }
-          
-          // Create document file from blob
+
           if (docxBlob) {
             const docFile: DocumentFile = {
               id: generateFileId(),
               name: file.name,
-              type: 'docx',
+              type: pdfTarget,
               originalType: 'pdf',
-              workflow: 'pdf-to-word',
+              workflow: `pdf-to-${pdfTarget}`,
               size: docxBlob.size,
               content: await docxBlob.arrayBuffer(),
               uploadedAt: Date.now(),
             }
-            
+
             addRecentFile(docFile)
             setCurrentFile(docFile)
-            
-            console.log(`✅ Document loaded (${usedFrontend ? 'Frontend' : 'Backend'} conversion)`)
-            showSuccessToast(`✅ File opened successfully (${(docxBlob.size / 1024).toFixed(2)}KB)`, 'pdf')
+            console.log(`Document loaded (${usedFrontend ? 'Frontend' : 'Backend'} conversion)`)
+            showSuccessToast(`File opened successfully (${(docxBlob.size / 1024).toFixed(2)}KB)`, 'pdf')
             return
           }
-          
+
           showErrorToast('PDF conversion failed: Could not generate Word document')
           return
         } catch (error) {
@@ -187,13 +159,21 @@ export default function HomeScreen() {
         }
       }
 
-      // For PPTX files, try to send to Flask backend for parsing
       if (fileType === 'pptx') {
+        const docFile: DocumentFile = {
+          id: generateFileId(),
+          name: file.name,
+          type: fileType,
+          size: file.size,
+          content,
+          uploadedAt: Date.now(),
+        }
+
         try {
-          console.log('Uploading PPTX to Flask...')
+          console.log('Processing PPTX...')
           const formData = new FormData()
           formData.append('file', file)
-          formData.append('renderMode', pptxMode)
+          formData.append('renderMode', 'pixel')
 
           const response = await fetch('http://localhost:5000/api/upload-pptx', {
             method: 'POST',
@@ -202,33 +182,22 @@ export default function HomeScreen() {
 
           if (response.ok) {
             const result = await response.json()
-            console.log(`Flask ${pptxMode} slide processing:`, result.total)
-            const docFile: DocumentFile = {
-              id: generateFileId(),
-              name: file.name,
-              type: fileType,
-              size: file.size,
-              content, // Keep original content as fallback
-              uploadedAt: Date.now(),
-              slides: result.slides, // Store Flask-parsed slides
+            if (result.slides?.length) {
+              docFile.slides = result.slides
             }
-            addRecentFile(docFile)
-            setCurrentFile(docFile)
-            showSuccessToast(`✅ ${file.name} opened successfully`, 'pptx')
-            return
           } else {
-            const error = await response.json()
-            showErrorToast(`PPTX conversion failed: ${error.error}`)
-            return
+            console.warn('PPTX backend parsing failed; using local parser in editor.')
           }
         } catch (error) {
-          showErrorToast('Could not convert PPTX on the backend. Make sure LibreOffice is installed and the Flask server is running.')
-          console.error('Flask connection failed:', error)
-          return
+          console.warn('PPTX backend unavailable; using local parser in editor.', error)
         }
+
+        addRecentFile(docFile)
+        setCurrentFile(docFile)
+        showSuccessToast(`${file.name} opened successfully`, 'pptx')
+        return
       }
 
-      // For PPTX files that Flask couldn't parse, or for other file types
       const docFile: DocumentFile = {
         id: generateFileId(),
         name: file.name,
@@ -239,36 +208,37 @@ export default function HomeScreen() {
       }
       addRecentFile(docFile)
       setCurrentFile(docFile)
-      showSuccessToast(`✅ ${file.name} opened successfully`, fileType)
+      showSuccessToast(`${file.name} opened successfully`, fileType)
     }
     reader.readAsArrayBuffer(file)
   }
 
   return (
     <div className="w-full h-full flex flex-col bg-gray-50">
-      {/* Settings button */}
-      <div className="absolute top-16 right-4 z-10">
-        <button
-          onClick={() => setShowThemePicker(!showThemePicker)}
-          className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
-          title="Theme Settings"
-        >
-          <Settings size={20} />
-        </button>
-      </div>
+      <Ribbon
+        fileType={selectedUploadType}
+        themeColorOverride={!selectedUploadType ? HOME_DEFAULT_COLOR : undefined}
+        actions={{
+          onOpen: () => {
+            const option = uploadOptions.find((item) => item.type === selectedUploadType)
+            if (option) {
+              openFileDialog(option.accept, option.type)
+            } else {
+              openFileDialog('.pdf,.docx,.pptx,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', null)
+            }
+          },
+        }}
+      />
 
       {showThemePicker && <ThemePicker onClose={() => setShowThemePicker(false)} />}
 
-      {/* Main content */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-4xl">
-          {/* Diamond Grid */}
           <div className="mb-12">
             <div className="diamond-container">
-              {/* WhiteBoard - Single */}
               <div
                 className="diamond-single"
-                onClick={() => openFileDialog('.pdf,.docx,.pptx,.xlsx')}
+                onClick={() => openFileDialog('.pdf,.docx,.pptx,.xlsx,.xlsm,.xls', selectedUploadType)}
               >
                 <div className="diamond-content">
                   <img src={whiteboardIcon} alt="WhiteBoard" className="diamond-icon" />
@@ -276,11 +246,10 @@ export default function HomeScreen() {
                 </div>
               </div>
 
-              {/* Row 1 - Pair */}
               <div className="diamond-row">
                 <div
                   className="diamond"
-                  onClick={() => openFileDialog('.png,.jpg,.jpeg,.gif,.webp')}
+                  onClick={() => openFileDialog('.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', 'image')}
                 >
                   <div className="diamond-content">
                     <img src={imageIcon} alt="Image" className="diamond-icon" />
@@ -289,7 +258,7 @@ export default function HomeScreen() {
                 </div>
                 <div
                   className="diamond"
-                  onClick={() => openFileDialog('.xlsx')}
+                  onClick={() => openFileDialog('.xlsx,.xlsm,.xls', 'xlsx')}
                 >
                   <div className="diamond-content">
                     <FileSpreadsheet size={28} className="diamond-icon" />
@@ -298,10 +267,9 @@ export default function HomeScreen() {
                 </div>
               </div>
 
-              {/* Plans - Single */}
               <div
                 className="diamond-single"
-                onClick={() => openFileDialog('.docx')}
+                onClick={() => openFileDialog('.docx', 'docx')}
               >
                 <div className="diamond-content">
                   <FileText size={28} className="diamond-icon" />
@@ -309,11 +277,10 @@ export default function HomeScreen() {
                 </div>
               </div>
 
-              {/* Row 2 - Pair */}
               <div className="diamond-row">
                 <div
                   className="diamond"
-                  onClick={() => openFileDialog('.pdf')}
+                  onClick={() => openFileDialog('.pdf', 'pdf')}
                 >
                   <div className="diamond-content">
                     <img src={pdfIcon} alt="PDF file" className="diamond-icon" />
@@ -322,7 +289,7 @@ export default function HomeScreen() {
                 </div>
                 <div
                   className="diamond"
-                  onClick={() => openFileDialog('.pptx')}
+                  onClick={() => openFileDialog('.pptx', 'pptx')}
                 >
                   <div className="diamond-content">
                     <Presentation size={28} className="diamond-icon" />
@@ -331,10 +298,9 @@ export default function HomeScreen() {
                 </div>
               </div>
 
-              {/* Sign - Single */}
               <div
                 className="diamond-single"
-                onClick={() => openFileDialog('.pdf')}
+                onClick={() => openFileDialog('.pdf', 'pdf')}
               >
                 <div className="diamond-content">
                   <img src={signIcon} alt="Sign" className="diamond-icon" />
@@ -344,17 +310,15 @@ export default function HomeScreen() {
             </div>
           </div>
 
-          {/* Hidden file input */}
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.pptx,.xlsx,.png,.jpg,.jpeg,.gif,.webp"
+            accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg"
             onChange={handleFileInput}
             className="hidden"
             multiple
           />
 
-          {/* Recent files */}
           {recentFiles.length > 0 && (
             <div className="mt-12">
               <h3 className="text-xl font-bold mb-4">Recent Files</h3>
@@ -369,13 +333,13 @@ export default function HomeScreen() {
                         return
                       }
                       setCurrentFile(file)
-                      showSuccessToast(`✅ ${file.name} opened successfully`, file.type)
+                      showSuccessToast(`${file.name} opened successfully`, file.type)
                     }}
                   >
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-800 truncate">{file.name}</p>
                       <p className="text-sm text-gray-500">
-                        {(file.originalType || file.type)?.toUpperCase()} • {formatFileSize(file.size)}
+                        {(file.originalType || file.type)?.toUpperCase()} - {formatFileSize(file.size)}
                       </p>
                     </div>
                     <button
@@ -395,7 +359,6 @@ export default function HomeScreen() {
         </div>
       </div>
 
-      {/* CSS styles */}
       <style>{`
         .diamond-container {
           display: flex;
@@ -464,23 +427,22 @@ export default function HomeScreen() {
           color: #1f6e2f;
         }
 
-        /* Responsive */
         @media (max-width: 640px) {
           .diamond, .diamond-single {
             width: 100px;
             height: 100px;
           }
-          
+
           .diamond-row {
             gap: 30px;
             margin: -40px 0;
           }
-          
+
           .diamond-content {
             font-size: 10px;
             gap: 4px;
           }
-          
+
           .diamond-icon {
             width: 20px;
             height: 20px;
