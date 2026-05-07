@@ -1,37 +1,32 @@
 import { useState, useRef } from 'react'
-import { Upload, X, Settings, FileText, FileImage, File, FileSpreadsheet, Presentation, PenTool, Layout } from 'lucide-react'
+import { X, Settings, FileText, FileSpreadsheet, Presentation } from 'lucide-react'
 import { useDocumentStore, DocumentFile } from '../store'
 import { getFileType, formatFileSize, generateFileId } from '../utils'
 import { convertPdfToDocx, isPdfConversionSuccessful } from '../utils/pdfConverter'
-import Ribbon from './Ribbon'
+import { showSuccessToast, showErrorToast } from '../utils/toast'
 import ThemePicker from './ThemePicker'
+import imageIcon from '../assets/image.png'
+import pdfIcon from '../assets/pdf.png'
+import signIcon from '../assets/Sign.png'
+import whiteboardIcon from '../assets/Vector.png'
 
 export default function HomeScreen() {
-  const [isDragging, setIsDragging] = useState(false)
   const [showThemePicker, setShowThemePicker] = useState(false)
-  const [pptxMode, setPptxMode] = useState<'pixel' | 'editable'>('editable')
+  const [pptxMode] = useState<'pixel' | 'editable'>('editable')
   const fileInputRef = useRef<HTMLInputElement>(null)
   const setCurrentFile = useDocumentStore((state) => state.setCurrentFile)
   const addRecentFile = useDocumentStore((state) => state.addRecentFile)
   const recentFiles = useDocumentStore((state) => state.recentFiles)
   const removeRecentFile = useDocumentStore((state) => state.removeRecentFile)
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
+  const openFileDialog = (accept: string) => {
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = accept
+      fileInputRef.current.value = ''
+      fileInputRef.current.click()
+    }
   }
 
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-  }
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const files = Array.from(e.dataTransfer.files)
-    files.forEach((file) => handleFile(file))
-  }
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.currentTarget.files || [])
@@ -41,7 +36,7 @@ export default function HomeScreen() {
   const handleFile = async (file: File) => {
     const fileType = getFileType(file)
     if (!fileType) {
-      alert('Unsupported file type. Please upload PDF, DOCX, PPTX, or XLSX.')
+      showErrorToast('Unsupported file type. Please upload PDF, DOCX, PPTX, or XLSX.')
       return
     }
 
@@ -54,7 +49,6 @@ export default function HomeScreen() {
       if (fileType === 'pdf') {
         let docxBlob: Blob | null = null
         let usedFrontend = false
-        
         try {
           console.log(`[1/2] Attempting frontend PDF to DOCX conversion for "${file.name}"...`)
           
@@ -113,7 +107,7 @@ export default function HomeScreen() {
                   errorMessage += `: ${response.status} ${response.statusText}`
                 }
                 
-                alert(errorMessage)
+                showErrorToast(errorMessage)
                 console.error('Backend PDF conversion error:', { status: response.status, errorMessage })
                 return
               }
@@ -121,7 +115,7 @@ export default function HomeScreen() {
               const result = await response.json()
               
               if (!result.success) {
-                alert(`Backend conversion failed: ${result.error || 'Unknown error'}`)
+                showErrorToast(`Backend conversion failed: ${result.error || 'Unknown error'}`)
                 return
               }
               
@@ -149,14 +143,14 @@ export default function HomeScreen() {
             } catch (backendError) {
               if (backendError instanceof Error) {
                 if (backendError.message.includes('Failed to fetch')) {
-                  alert(
+                  showErrorToast(
                     'Connection error: Make sure the Flask backend is running on http://localhost:5000'
                   )
                 } else {
-                  alert(`Backend connection error: ${backendError.message}`)
+                  showErrorToast(`Backend connection error: ${backendError.message}`)
                 }
               } else {
-                alert('Could not reach backend service for PDF conversion.')
+                showErrorToast('Could not reach backend service for PDF conversion.')
               }
               console.error('Backend connection error:', backendError)
               return
@@ -179,17 +173,16 @@ export default function HomeScreen() {
             addRecentFile(docFile)
             setCurrentFile(docFile)
             
-            console.log(
-              `✅ PDF successfully converted to Word format (${usedFrontend ? 'Frontend' : 'Backend'} - ${(docxBlob.size / 1024).toFixed(2)}KB)`
-            )
+            console.log(`✅ Document loaded (${usedFrontend ? 'Frontend' : 'Backend'} conversion)`)
+            showSuccessToast(`✅ File opened successfully (${(docxBlob.size / 1024).toFixed(2)}KB)`, 'pdf')
             return
           }
           
-          alert('PDF conversion failed: Could not generate Word document')
+          showErrorToast('PDF conversion failed: Could not generate Word document')
           return
         } catch (error) {
           console.error('PDF workflow error:', error)
-          alert('An unexpected error occurred while converting PDF to Word.')
+          showErrorToast('An unexpected error occurred while converting PDF to Word.')
           return
         }
       }
@@ -221,14 +214,15 @@ export default function HomeScreen() {
             }
             addRecentFile(docFile)
             setCurrentFile(docFile)
+            showSuccessToast(`✅ ${file.name} opened successfully`, 'pptx')
             return
           } else {
             const error = await response.json()
-            alert(`PPTX conversion failed: ${error.error}`)
+            showErrorToast(`PPTX conversion failed: ${error.error}`)
             return
           }
         } catch (error) {
-          alert('Could not convert PPTX on the backend. Make sure LibreOffice is installed and the Flask server is running.')
+          showErrorToast('Could not convert PPTX on the backend. Make sure LibreOffice is installed and the Flask server is running.')
           console.error('Flask connection failed:', error)
           return
         }
@@ -245,14 +239,13 @@ export default function HomeScreen() {
       }
       addRecentFile(docFile)
       setCurrentFile(docFile)
+      showSuccessToast(`✅ ${file.name} opened successfully`, fileType)
     }
     reader.readAsArrayBuffer(file)
   }
 
   return (
     <div className="w-full h-full flex flex-col bg-gray-50">
-      <Ribbon />
-
       {/* Settings button */}
       <div className="absolute top-16 right-4 z-10">
         <button
@@ -275,10 +268,10 @@ export default function HomeScreen() {
               {/* WhiteBoard - Single */}
               <div
                 className="diamond-single"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => openFileDialog('.pdf,.docx,.pptx,.xlsx')}
               >
                 <div className="diamond-content">
-                  <Layout size={28} className="diamond-icon" />
+                  <img src={whiteboardIcon} alt="WhiteBoard" className="diamond-icon" />
                   <span>WhiteBoard</span>
                 </div>
               </div>
@@ -287,20 +280,20 @@ export default function HomeScreen() {
               <div className="diamond-row">
                 <div
                   className="diamond"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => openFileDialog('.png,.jpg,.jpeg,.gif,.webp')}
                 >
                   <div className="diamond-content">
-                    <FileImage size={28} className="diamond-icon" />
+                    <img src={imageIcon} alt="Image" className="diamond-icon" />
                     <span>Image</span>
                   </div>
                 </div>
                 <div
                   className="diamond"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => openFileDialog('.xlsx')}
                 >
                   <div className="diamond-content">
-                    <FileImage size={28} className="diamond-icon" />
-                    <span>Medical image</span>
+                    <FileSpreadsheet size={28} className="diamond-icon" />
+                    <span>Excel</span>
                   </div>
                 </div>
               </div>
@@ -308,11 +301,11 @@ export default function HomeScreen() {
               {/* Plans - Single */}
               <div
                 className="diamond-single"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => openFileDialog('.docx')}
               >
                 <div className="diamond-content">
-                  <PenTool size={28} className="diamond-icon" />
-                  <span>Plans</span>
+                  <FileText size={28} className="diamond-icon" />
+                  <span>Word</span>
                 </div>
               </div>
 
@@ -320,20 +313,20 @@ export default function HomeScreen() {
               <div className="diamond-row">
                 <div
                   className="diamond"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => openFileDialog('.pdf')}
                 >
                   <div className="diamond-content">
-                    <FileText size={28} className="diamond-icon" />
+                    <img src={pdfIcon} alt="PDF file" className="diamond-icon" />
                     <span>PDF file</span>
                   </div>
                 </div>
                 <div
                   className="diamond"
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => openFileDialog('.pptx')}
                 >
                   <div className="diamond-content">
-                    <FileSpreadsheet size={28} className="diamond-icon" />
-                    <span>Office pack</span>
+                    <Presentation size={28} className="diamond-icon" />
+                    <span>POWER POINT</span>
                   </div>
                 </div>
               </div>
@@ -341,10 +334,10 @@ export default function HomeScreen() {
               {/* Sign - Single */}
               <div
                 className="diamond-single"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => openFileDialog('.pdf')}
               >
                 <div className="diamond-content">
-                  <PenTool size={28} className="diamond-icon" />
+                  <img src={signIcon} alt="Sign" className="diamond-icon" />
                   <span>Sign</span>
                 </div>
               </div>
@@ -355,7 +348,7 @@ export default function HomeScreen() {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.pptx,.xlsx"
+            accept=".pdf,.docx,.pptx,.xlsx,.png,.jpg,.jpeg,.gif,.webp"
             onChange={handleFileInput}
             className="hidden"
             multiple
@@ -372,10 +365,11 @@ export default function HomeScreen() {
                     className="flex items-center justify-between p-4 bg-white rounded-lg shadow hover:shadow-lg transition-shadow cursor-pointer group"
                     onClick={() => {
                       if (!file.content || file.content.byteLength === 0) {
-                        alert('This recent file entry has no local file data. Please upload the file again.')
+                        showErrorToast('This recent file entry has no local file data. Please upload the file again.')
                         return
                       }
                       setCurrentFile(file)
+                      showSuccessToast(`✅ ${file.name} opened successfully`, file.type)
                     }}
                   >
                     <div className="flex-1 min-w-0">
@@ -458,6 +452,11 @@ export default function HomeScreen() {
         .diamond-icon {
           color: #2e9e44;
           margin-bottom: 4px;
+          display: block;
+          max-width: 36px;
+          max-height: 36px;
+          width: auto;
+          height: auto;
         }
 
         .diamond:hover .diamond-icon,

@@ -22,10 +22,15 @@ import {
   Replace,
   Search,
   Languages,
-  LogOut,
   ChevronDown,
   Printer,
+  RotateCcw,
+  RotateCw,
+  Move,
+  RefreshCw,
 } from 'lucide-react'
+import backIcon from '../assets/Back.png'
+import TextColorPicker from './TextColorPicker'
 
 export interface RibbonActions {
   onSave?: () => void | Promise<void>
@@ -48,13 +53,77 @@ export interface RibbonActions {
   onReplace?: () => void
   onSetTool?: (tool: 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase') => void
   onSetLanguage?: (language: string) => void
-  onLogout?: () => void
+  onBack?: () => void
+  // Image-specific actions
+  onRotateLeft?: () => void
+  onRotateRight?: () => void
+  onResetRotation?: () => void
+  onTogglePan?: () => void
+  onResetPosition?: () => void
+  isPanActive?: boolean
 }
 
 interface RibbonProps {
   fileType?: string | null
   actions?: RibbonActions
 }
+
+// Expanded font options
+const FONT_OPTIONS = [
+  'Montserrat',
+  'Arial',
+  'Georgia',
+  'Times New Roman',
+  'Courier New',
+  'Verdana',
+  'Tahoma',
+  'Helvetica',
+  'Impact',
+  'Comic Sans MS',
+  'Trebuchet MS',
+  'Lucida Sans',
+  'Open Sans',
+  'Roboto',
+  'Lato',
+  'Poppins',
+  'Nunito',
+  'Inter',
+]
+
+// Font size options
+const FONT_SIZE_OPTIONS = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48, 56, 64, 72]
+
+// Preset colors for quick selection
+const PRESET_COLORS = [
+  '#000000', // Black
+  '#FFFFFF', // White
+  '#FF0000', // Red
+  '#00FF00', // Green
+  '#0000FF', // Blue
+  '#FFFF00', // Yellow
+  '#FF00FF', // Magenta
+  '#00FFFF', // Cyan
+  '#FFA500', // Orange
+  '#800080', // Purple
+  '#FFC0CB', // Pink
+  '#A52A2A', // Brown
+  '#808080', // Gray
+  '#f6c94c', // Gold
+  '#9be15d', // Lime
+  '#E6194B', // Bright Red
+  '#3CB44B', // Bright Green
+  '#4363D8', // Bright Blue
+  '#F58231', // Orange
+  '#911EB4', // Purple
+  '#46F0F0', // Cyan
+  '#F032E6', // Magenta
+  '#BCF60C', // Lime Yellow
+  '#FABEBE', // Pink
+  '#008080', // Teal
+  '#E6BEFF', // Lavender
+  '#AA6E28', // Brown
+  '#800000', // Maroon
+]
 
 export default function Ribbon({ fileType, actions }: RibbonProps) {
   const toggleDarkMode = useDocumentStore((state) => state.toggleDarkMode)
@@ -78,6 +147,8 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
       ? 'PDF mode'
       : fileType === 'xlsx'
       ? 'Excel mode'
+      : fileType === 'image'
+      ? 'Image mode'
       : 'Word mode'
 
   const handlePrint = () => {
@@ -104,13 +175,44 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
         </button>
       </div>
 
-      <div className="flex items-stretch gap-0 overflow-x-auto px-2 py-2 text-white" style={{ backgroundColor: themeColor }}>
+      <div className="flex items-stretch gap-0 overflow-x-auto px-2 py-2 text-white" style={{ backgroundColor: themeColor, height: '91px' }}>
         <RibbonGroup label="File">
           <RibbonButton icon={<Save size={18} />} label="Save" onClick={actions?.onSave} disabled={!actions?.onSave} />
           <RibbonButton icon={<FolderOpen size={18} />} label="Open" onClick={actions?.onOpen} disabled={!actions?.onOpen} />
           <RibbonButton icon={<Download size={18} />} label="Export" onClick={actions?.onExport} disabled={!actions?.onExport} />
           <RibbonButton icon={<Printer size={18} />} label="Print" onClick={handlePrint}  disabled={!actions?.onSave} />
         </RibbonGroup>
+
+        {/* Image Controls - only show when file is image */}
+        {fileType === 'image' && (
+          <RibbonGroup label="Image">
+            <RibbonButton 
+              icon={<RotateCcw size={18} />} 
+              label="Rotate Left" 
+              onClick={actions?.onRotateLeft} 
+              disabled={!actions?.onRotateLeft} 
+            />
+            <RibbonButton 
+              icon={<RotateCw size={18} />} 
+              label="Rotate Right" 
+              onClick={actions?.onRotateRight} 
+              disabled={!actions?.onRotateRight} 
+            />
+            <RibbonButton 
+              icon={<Move size={18} />} 
+              label="Pan" 
+              onClick={actions?.onTogglePan}
+              active={actions?.isPanActive}
+              disabled={!actions?.onTogglePan}
+            />
+            <RibbonButton 
+              icon={<RefreshCw size={18} />} 
+              label="Reset View" 
+              onClick={actions?.onResetPosition} 
+              disabled={!actions?.onResetPosition} 
+            />
+          </RibbonGroup>
+        )}
 
         <RibbonGroup label="Tools">
           <RibbonButton icon={<MousePointer2 size={18} />} label="Select" active={activeTool === 'select'} onClick={() => { setActiveTool('select'); actions?.onSetTool?.('select') }} />
@@ -128,22 +230,22 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
               onChange={(e) => actions?.onSetFontFamily?.(e.target.value)}
               className="h-8 rounded-md border border-white/20 bg-white/95 px-2 text-[11px] text-gray-800 outline-none"
             >
-              <option>Montserrat</option>
-              <option>Arial</option>
-              <option>Georgia</option>
-              <option>Times New Roman</option>
-              <option>Courier New</option>
+              {FONT_OPTIONS.map((font) => (
+                <option key={font} value={font} style={{ fontFamily: font }}>
+                  {font}
+                </option>
+              ))}
             </select>
             <select
               defaultValue="16"
               onChange={(e) => actions?.onSetFontSize?.(parseInt(e.target.value, 10))}
-              className="h-8 w-14 rounded-md border border-white/20 bg-white/95 px-2 text-[11px] text-gray-800 outline-none"
+              className="h-8 w-16 rounded-md border border-white/20 bg-white/95 px-2 text-[11px] text-gray-800 outline-none"
             >
-              <option>16</option>
-              <option>14</option>
-              <option>12</option>
-              <option>10</option>
-              <option>8</option>
+              {FONT_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
             </select>
           </div>
           <div className="mt-2 flex items-center gap-1">
@@ -160,11 +262,11 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
         </RibbonGroup>
 
         <RibbonGroup label="Colors">
-          <div className="flex items-end gap-2">
-            <ColorSwatch label="Color 1" color="#f6c94c" onClick={() => actions?.onSetColor?.('#f6c94c')} />
-            <ColorSwatch label="Color 2" color="#9be15d" onClick={() => actions?.onSetColor?.('#9be15d')} />
-          </div>
-          <div className="mt-2 text-center text-[11px] font-medium text-white/90">Select colors</div>
+          <TextColorPicker 
+            onColorSelect={actions?.onSetColor}
+            presetColors={PRESET_COLORS}
+            disabled={!actions?.onSetColor}
+          />
         </RibbonGroup>
 
         <RibbonGroup label="Find & Replace">
@@ -196,10 +298,10 @@ export default function Ribbon({ fileType, actions }: RibbonProps) {
           </button>
         </RibbonGroup>
 
-        <RibbonGroup label="Account" alignRight>
-          <button onClick={actions?.onLogout} className="flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-[12px] font-medium hover:bg-white/20">
-            <LogOut size={16} />
-            Log out
+        <RibbonGroup label="Clear" alignRight>
+          <button onClick={actions?.onBack} className="flex flex-col items-center justify-center rounded-lg border border-white/20 bg-white/10 px-3 py-2 h-10 w-10 hover:bg-white/20">
+            <img src={backIcon} alt="Back" className="w-6 h-6 mb-1" />
+            <span className="text-[10px] font-medium text-white">Back</span>
           </button>
         </RibbonGroup>
       </div>
@@ -244,7 +346,7 @@ function RibbonGroup({
 }) {
   return (
     <div
-      className={`mx-1 flex min-h-[76px] flex-col justify-between rounded-xl border border-white/20 bg-white/8 px-2 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] ${
+      className={`relative mx-1 flex h-[72px] flex-col justify-between rounded-xl border border-white/20 bg-white/8 px-2 py-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] ${
         alignRight ? 'ml-auto' : ''
       }`}
     >
@@ -256,23 +358,3 @@ function RibbonGroup({
   )
 }
 
-function ColorSwatch({
-  label,
-  color,
-  onClick,
-}: {
-  label: string
-  color: string
-  onClick?: () => void
-}) {
-  return (
-    <button
-      onMouseDown={(e) => e.preventDefault()}
-      onClick={onClick}
-      className="flex h-14 w-16 flex-col items-center justify-center rounded-lg border border-white/20 bg-white/10 px-2 py-1 hover:bg-white/20"
-    >
-      <div className="mb-1 h-7 w-7 rounded-sm border border-white/30 shadow-sm" style={{ backgroundColor: color }} />
-      <span className="text-[10px] font-medium text-white">{label}</span>
-    </button>
-  )
-}
