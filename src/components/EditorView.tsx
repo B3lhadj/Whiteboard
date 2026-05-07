@@ -1,20 +1,28 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../store'
-import { ChevronLeft, Save, Download, Printer } from 'lucide-react'
+import { ChevronLeft} from 'lucide-react'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { showSuccessToast, showErrorToast } from '../utils/toast'
 import Ribbon, { type RibbonActions } from './Ribbon'
 import StatusBar from './StatusBar'
 import WordEditor from './editors/WordEditor'
 import PowerPointEditor from './editors/PowerPointEditor'
 import PDFEditor from './editors/PDFEditor'
 import ExcelEditor from './editors/ExcelEditor'
+import ImageEditor from './editors/ImageEditor'
 
 interface EditorViewProps {
   file: DocumentFile
 }
 
 export default function EditorView({ file }: EditorViewProps) {
-  const [isSaving, setIsSaving] = useState(false)
+  const [, setIsSaving] = useState(false)
+  const [rotation, setRotation] = useState(0)
+  const [isDragging, setIsDragging] = useState(false)
+  const [position, setPosition] = useState({ x: 0, y: 0 })
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const imageContainerRef = useRef<HTMLDivElement>(null)
+  
   const clearCurrentFile = useDocumentStore((state) => state.clearCurrentFile)
   const editorHtml = useDocumentStore((state) => state.editorHtml)
   const zoom = useDocumentStore((state) => state.zoom)
@@ -22,12 +30,22 @@ export default function EditorView({ file }: EditorViewProps) {
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
   const displayType = (file.originalType || file.type) as DocumentFile['type']
 
+  const handleBack = () => {
+    showSuccessToast('✅ File closed', displayType)
+    clearCurrentFile()
+  }
+
   const handleSave = async () => {
     setIsSaving(true)
-    // Simulate save
-    await new Promise((resolve) => setTimeout(resolve, 800))
+    // For images, save the current state if edited
+    if (file.type === 'image') {
+      // You could implement image saving here if needed
+      await new Promise((resolve) => setTimeout(resolve, 800))
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 800))
+    }
     setIsSaving(false)
-    alert(`✓ ${file.name} saved successfully!`)
+    showSuccessToast(`✅ ${file.name} saved successfully!`, file.type)
   }
 
   const handleExport = async () => {
@@ -35,7 +53,7 @@ export default function EditorView({ file }: EditorViewProps) {
       try {
         const doc = await PDFDocument.create()
         const font = await doc.embedFont(StandardFonts.Helvetica)
-        let currentPdfPage = doc.addPage([595.28, 841.89]) // A4 in points
+        let currentPdfPage = doc.addPage([595.28, 841.89])
         const margin = 40
         const fontSize = 11
         const lineHeight = 15
@@ -67,7 +85,6 @@ export default function EditorView({ file }: EditorViewProps) {
             }
 
             currentPdfPage.drawText(fit, { x: margin, y, size: fontSize, font })
-
             y -= lineHeight
             line = line.slice(fit.length)
           }
@@ -87,16 +104,131 @@ export default function EditorView({ file }: EditorViewProps) {
         URL.revokeObjectURL(url)
       } catch (err) {
         console.error('Export failed:', err)
-        alert('Could not export edited PDF.')
+        showErrorToast('Could not export edited PDF.')
       }
       return
     }
 
-    alert('Export feature coming soon!')
+    // Handle image export
+    if (file.type === 'image') {
+      try {
+        const blob = new Blob([file.content], { type: getImageMimeType(file.name) })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = file.name
+        a.click()
+        URL.revokeObjectURL(url)
+        showSuccessToast(`✅ ${file.name} exported successfully!`, file.type)
+      } catch (err) {
+        console.error('Export failed:', err)
+        showErrorToast('Could not export image.')
+      }
+      return
+    }
+
+    showErrorToast('Export feature coming soon!')
+  }
+
+  const getImageMimeType = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase()
+    const mimeTypes: Record<string, string> = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'bmp': 'image/bmp',
+      'svg': 'image/svg+xml'
+    }
+    return mimeTypes[ext || ''] || 'image/png'
   }
 
   const handlePrint = () => {
+    if (file.type === 'image') {
+      const printWindow = window.open('', '_blank')
+      if (printWindow) {
+        const imageUrl = URL.createObjectURL(new Blob([file.content], { type: getImageMimeType(file.name) }))
+        printWindow.document.write(`
+          <html>
+            <head>
+              <title>${file.name}</title>
+              <style>
+                body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+                img { max-width: 100%; max-height: 100vh; object-fit: contain; }
+              </style>
+            </head>
+            <body>
+              <img src="${imageUrl}" alt="${file.name}" />
+              <script>
+                window.onload = () => {
+                  window.print();
+                  window.onafterprint = () => window.close();
+                }
+              <\/script>
+            </body>
+          </html>
+        `)
+        printWindow.document.close()
+      }
+      return
+    }
     window.print()
+  }
+
+  // Image-specific handlers
+  const handleRotateLeft = () => {
+    setRotation(prev => prev - 90)
+    applyImageTransform()
+  }
+
+  const handleRotateRight = () => {
+    setRotation(prev => prev + 90)
+    applyImageTransform()
+  }
+
+  const handleResetRotation = () => {
+    setRotation(0)
+    applyImageTransform()
+  }
+
+  const handleResetPosition = () => {
+    setPosition({ x: 0, y: 0 })
+    applyImageTransform()
+  }
+
+  const applyImageTransform = () => {
+    const container = imageContainerRef.current
+    if (container) {
+      container.style.transform = `translate(${position.x}px, ${position.y}px) rotate(${rotation}deg)`
+    }
+  }
+
+  const handleTogglePan = () => {
+    setIsDragging(!isDragging)
+  }
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!isDragging) return
+    setDragStart({
+      x: e.clientX - position.x,
+      y: e.clientY - position.y
+    })
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (isDragging) {
+      const newPosition = {
+        x: e.clientX - dragStart.x,
+        y: e.clientY - dragStart.y
+      }
+      setPosition(newPosition)
+      applyImageTransform()
+    }
+  }
+
+  const handleMouseUp = () => {
+    setIsDragging(false)
   }
 
   const getEditableRoot = () => {
@@ -183,15 +315,23 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const handleFind = () => {
+    if (file.type === 'image') {
+      showErrorToast('Find is not available for images')
+      return
+    }
     const searchText = window.prompt('Find text:')?.trim()
     if (!searchText) return
     const browserWindow = window as Window & { find?: (query: string) => boolean }
     if (!browserWindow.find?.(searchText)) {
-      alert(`Could not find "${searchText}" in the active document.`)
+      showErrorToast(`Could not find "${searchText}" in the active document.`)
     }
   }
 
   const handleReplace = () => {
+    if (file.type === 'image') {
+      showErrorToast('Replace is not available for images')
+      return
+    }
     const searchText = window.prompt('Find text to replace:')?.trim()
     if (!searchText) return
     const replacementText = window.prompt('Replace with:', '')
@@ -199,17 +339,17 @@ export default function EditorView({ file }: EditorViewProps) {
 
     const replaced = replaceTextInEditable(searchText, replacementText)
     if (!replaced) {
-      alert('Select a document area with editable text before replacing.')
+      showErrorToast('Select a document area with editable text before replacing.')
     }
   }
 
   const toolbarActions: RibbonActions = {
     onSave: handleSave,
-    onOpen: clearCurrentFile,
+    onOpen: handleBack,
     onExport: handleExport,
     onPrint: handlePrint,
-    onZoomIn: () => setZoom(zoom + 10),
-    onZoomOut: () => setZoom(zoom - 10),
+    onZoomIn: () => setZoom(Math.min(300, zoom + 10)),
+    onZoomOut: () => setZoom(Math.max(10, zoom - 10)),
     onToggleBold: () => applySelectionStyle({ fontWeight: 'bold' }),
     onToggleItalic: () => applySelectionStyle({ fontStyle: 'italic' }),
     onToggleUnderline: () => applySelectionStyle({ textDecoration: 'underline' }),
@@ -224,7 +364,14 @@ export default function EditorView({ file }: EditorViewProps) {
     onReplace: handleReplace,
     onSetTool: setActiveTool,
     onSetLanguage: (language) => console.log('Language changed to', language),
-    onLogout: clearCurrentFile,
+    onBack: handleBack,
+    // Image-specific actions
+    onRotateLeft: file.type === 'image' ? handleRotateLeft : undefined,
+    onRotateRight: file.type === 'image' ? handleRotateRight : undefined,
+    onResetRotation: file.type === 'image' ? handleResetRotation : undefined,
+    onTogglePan: file.type === 'image' ? handleTogglePan : undefined,
+    onResetPosition: file.type === 'image' ? handleResetPosition : undefined,
+    isPanActive: isDragging,
   }
 
   useEffect(() => {
@@ -253,7 +400,7 @@ export default function EditorView({ file }: EditorViewProps) {
 
       <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
         <button
-          onClick={clearCurrentFile}
+          onClick={handleBack}
           className="flex items-center gap-2 rounded px-3 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-200"
           title="Back (Ctrl+O)"
         >
@@ -265,16 +412,33 @@ export default function EditorView({ file }: EditorViewProps) {
           <div className="font-semibold text-gray-800">{file.name}</div>
           <div className="text-[11px] text-gray-500">{displayType?.toUpperCase()}</div>
         </div>
-
-      
       </div>
 
       {/* Editor content */}
-      <div className="flex-1 overflow-hidden flex flex-col">
+      <div 
+        className="flex-1 overflow-hidden flex flex-col"
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
         {file.type === 'docx' && <WordEditor file={file} />}
         {file.type === 'pptx' && <PowerPointEditor file={file} />}
         {file.type === 'pdf' && <PDFEditor file={file} />}
         {file.type === 'xlsx' && <ExcelEditor file={file} />}
+        {file.type === 'image' && (
+          <div 
+            ref={imageContainerRef}
+            style={{
+              cursor: isDragging ? 'grabbing' : 'default',
+              transition: 'transform 0.2s ease',
+              width: '100%',
+              height: '100%'
+            }}
+            onMouseDown={handleMouseDown}
+          >
+            <ImageEditor file={file} />
+          </div>
+        )}
       </div>
 
       <StatusBar file={file} />

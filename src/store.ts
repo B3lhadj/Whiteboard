@@ -1,8 +1,17 @@
 import { create } from 'zustand'
 
-export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | null
+export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | null
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
 export type ToolbarTool = 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase'
+export type ToastType = 'success' | 'error' | 'info'
+
+export interface ToastMessage {
+  id: string
+  message: string
+  type: ToastType
+  color?: string
+  duration?: number
+}
 
 export interface DocumentFile {
   id: string
@@ -28,6 +37,7 @@ export interface DocumentState {
   editorHtml: string
   activeTool: ToolbarTool
   selectedLanguage: string
+  toasts: ToastMessage[]
   
   // Actions
   setCurrentFile: (file: DocumentFile) => void
@@ -45,6 +55,8 @@ export interface DocumentState {
   clearCurrentFile: () => void
   loadRecentFilesFromStorage: () => void
   saveRecentFilesToStorage: () => void
+  showToast: (message: string, type: ToastType, color?: string, duration?: number) => void
+  removeToast: (id: string) => void
 }
 
 export const useDocumentStore = create<DocumentState>((set, get) => ({
@@ -59,6 +71,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   editorHtml: '',
   activeTool: 'select',
   selectedLanguage: 'English',
+  toasts: [],
 
   setCurrentFile: (file) => {
     set({ currentFile: file })
@@ -144,5 +157,19 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       uploadedAt: f.uploadedAt,
     }))
     localStorage.setItem('recentFiles', JSON.stringify(simplified))
+  },
+
+  showToast: (message, type, color, duration) => {
+    const id = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+    const toast: ToastMessage = { id, message, type, color, duration }
+    set((state) => ({
+      toasts: [...state.toasts, toast],
+    }))
+  },
+
+  removeToast: (id) => {
+    set((state) => ({
+      toasts: state.toasts.filter((t) => t.id !== id),
+    }))
   },
 }))

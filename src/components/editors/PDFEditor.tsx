@@ -3,6 +3,7 @@ import { DocumentFile, useDocumentStore } from '../../store'
 import { ChevronLeft, ChevronRight, AlertCircle, Type, Download, Trash2 } from 'lucide-react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
+import { showErrorToast } from '../../utils/toast'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
 
 interface PDFEditorProps {
@@ -247,7 +248,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       URL.revokeObjectURL(url)
     } catch (exportErr) {
       console.error('Export failed:', exportErr)
-      alert('Could not export edited PDF.')
+      showErrorToast('Could not export edited PDF.')
     } finally {
       setIsExporting(false)
     }

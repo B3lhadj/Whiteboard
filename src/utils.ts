@@ -6,6 +6,8 @@ export function getFileType(file: File): FileType {
   if (name.endsWith('.pptx')) return 'pptx'
   if (name.endsWith('.xlsx')) return 'xlsx'
   if (name.endsWith('.pdf')) return 'pdf'
+  // Image support
+  if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.bmp') || name.endsWith('.svg')) return 'image'
   return null
 }
 
@@ -15,6 +17,7 @@ export function getThemeForFileType(fileType: FileType): string {
     xlsx: '#217346',
     pptx: '#b7472a',
     pdf: '#e02b20',
+    image: '#0ea5a4',
     default: '#3b82f6',
   }
   return themes[fileType || 'default'] || themes.default
