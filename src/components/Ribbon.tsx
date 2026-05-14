@@ -101,6 +101,9 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
     ? getThemeForFileType(fileType as any)
     : '#217346')
 
+  const pageOrientation = useDocumentStore((state) => state.pageOrientation)
+  const setPageOrientation = useDocumentStore((state) => state.setPageOrientation)
+
   const modeLabel =
     !fileType
       ? 'Home mode'
@@ -242,6 +245,25 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
         <RibbonGroup label="Colors">
           <OfficeColorPicker onSetColor={actions?.onSetColor} themeColor={themeColor} />
         </RibbonGroup>
+
+        {(fileType === 'pdf' || fileType === 'pptx' || fileType === 'docx') && (
+          <RibbonGroup label="Layout">
+            <RibbonButton
+              icon={<RotateCcw size={18} />}
+              label="Portrait"
+              compact
+              active={pageOrientation === 'portrait'}
+              onClick={() => setPageOrientation('portrait')}
+            />
+            <RibbonButton
+              icon={<RotateCw size={18} />}
+              label="Landscape"
+              compact
+              active={pageOrientation === 'landscape'}
+              onClick={() => setPageOrientation('landscape')}
+            />
+          </RibbonGroup>
+        )}
 
         <RibbonGroup label="Find & Replace">
           <RibbonButton icon={<Replace size={18} />} label="Replace" onClick={actions?.onReplace} disabled={!actions?.onReplace} />

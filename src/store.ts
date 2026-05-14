@@ -35,6 +35,7 @@ export interface DocumentState {
   selectedTheme: ThemeColor
   darkMode: boolean
   zoom: number
+  pageOrientation: 'portrait' | 'landscape'
   currentPage: number
   wordCount: number
   charCount: number
@@ -48,6 +49,7 @@ export interface DocumentState {
 
   // Actions
   setCurrentFile: (file: DocumentFile) => void
+  setPageOrientation: (orientation: 'portrait' | 'landscape') => void
   addRecentFile: (file: DocumentFile) => void
   removeRecentFile: (id: string) => void
   setSelectedTheme: (theme: ThemeColor) => void
@@ -93,6 +95,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   selectedTheme: 'blue',
   darkMode: false,
   zoom: 100,
+  pageOrientation: 'portrait',
   currentPage: 1,
   wordCount: 0,
   charCount: 0,
@@ -105,7 +108,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   toasts: [],
 
   setCurrentFile: (file) => {
-    set({ currentFile: file, currentPage: 1, zoom: 100 })
+    // Set initial orientation based on file type
+    const initialOrientation = file.type === 'pptx' ? 'landscape' : 'portrait'
+    set({ currentFile: file, currentPage: 1, zoom: 100, pageOrientation: initialOrientation })
   },
 
   addRecentFile: (file) => {
@@ -140,6 +145,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.min(200, Math.max(50, zoom)) }),
 
   setCurrentPage: (page) => set({ currentPage: page }),
+  setPageOrientation: (orientation) => set({ pageOrientation: orientation }),
 
   setWordCount: (count) => set({ wordCount: count }),
 
@@ -161,6 +167,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
     set({
       currentFile: null,
       currentPage: 1,
+      pageOrientation: 'portrait',
       wordCount: 0,
       charCount: 0,
       editorHtml: '',

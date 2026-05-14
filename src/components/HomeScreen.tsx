@@ -1,17 +1,14 @@
 import { useState, useRef } from 'react'
-import { X, FileText, FileSpreadsheet, Presentation, Image as ImageIcon } from 'lucide-react'
+import { X, FileText, FileSpreadsheet, Presentation } from 'lucide-react'
 import { useDocumentStore, DocumentFile, FileType } from '../store'
 import { getFileType, formatFileSize, generateFileId } from '../utils'
 import { convertPdfToDocx, isPdfConversionSuccessful } from '../utils/pdfConverter'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
-import Ribbon from './Ribbon'
 import ThemePicker from './ThemePicker'
 import imageIcon from '../assets/image.png'
 import pdfIcon from '../assets/pdf.png'
 import signIcon from '../assets/Sign.png'
 import whiteboardIcon from '../assets/Vector.png'
-
-const HOME_DEFAULT_COLOR = '#2e9e44'
 
 export default function HomeScreen() {
   const [showThemePicker, setShowThemePicker] = useState(false)
@@ -21,14 +18,6 @@ export default function HomeScreen() {
   const addRecentFile = useDocumentStore((state) => state.addRecentFile)
   const recentFiles = useDocumentStore((state) => state.recentFiles)
   const removeRecentFile = useDocumentStore((state) => state.removeRecentFile)
-
-  const uploadOptions = [
-    { label: 'Word', type: 'docx' as FileType, accept: '.docx', icon: <FileText size={18} /> },
-    { label: 'PDF', type: 'pdf' as FileType, accept: '.pdf', icon: <img src={pdfIcon} alt="" className="h-5 w-5" /> },
-    { label: 'PowerPoint', type: 'pptx' as FileType, accept: '.pptx', icon: <Presentation size={18} /> },
-    { label: 'Excel', type: 'xlsx' as FileType, accept: '.xlsx,.xlsm,.xls', icon: <FileSpreadsheet size={18} /> },
-    { label: 'Image', type: 'image' as FileType, accept: '.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', icon: <ImageIcon size={18} /> },
-  ]
 
   const openFileDialog = (accept: string, type: FileType = selectedUploadType) => {
     setSelectedUploadType(type)
@@ -215,21 +204,6 @@ export default function HomeScreen() {
 
   return (
     <div className="w-full h-full flex flex-col bg-gray-50">
-      <Ribbon
-        fileType={selectedUploadType}
-        themeColorOverride={!selectedUploadType ? HOME_DEFAULT_COLOR : undefined}
-        actions={{
-          onOpen: () => {
-            const option = uploadOptions.find((item) => item.type === selectedUploadType)
-            if (option) {
-              openFileDialog(option.accept, option.type)
-            } else {
-              openFileDialog('.pdf,.docx,.pptx,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', null)
-            }
-          },
-        }}
-      />
-
       {showThemePicker && <ThemePicker onClose={() => setShowThemePicker(false)} />}
 
       <div className="flex-1 flex items-center justify-center p-8">

@@ -54,6 +54,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const addPage = useDocumentStore((state) => state.addPage)
   const updatePageOrder = useDocumentStore((state) => state.updatePageOrder)
   const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
+  const pageOrientation = useDocumentStore((state) => state.pageOrientation)
 
   const pageOrder = currentFile?.pageOrder || []
   const viewOnly = currentFile?.viewOnly || false
@@ -116,6 +117,13 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     loadPDF()
   }, [file.content, setCurrentPage])
 
+  const getPdfRotation = async (page: any) => {
+    const viewport = page.getViewport({ scale: 1 })
+    const isLandscapePage = viewport.width > viewport.height
+    const wantsLandscape = pageOrientation === 'landscape'
+    return wantsLandscape !== isLandscapePage ? 90 : 0
+  }
+
   useEffect(() => {
     const buildThumbnails = async () => {
       if (!pdfDoc || pageOrder.length === 0) return
@@ -128,7 +136,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
             continue
           }
           const page = await pdfDoc.getPage(originalIndex + 1)
-          const viewport = page.getViewport({ scale: 0.18 })
+          const rotation = await getPdfRotation(page)
+          const viewport = page.getViewport({ scale: 0.18, rotation })
           const canvas = document.createElement('canvas')
           const context = canvas.getContext('2d')
           if (!context) continue
@@ -146,7 +155,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
 
     buildThumbnails()
-  }, [pdfDoc, pageOrder])
+  }, [pdfDoc, pageOrder, pageOrientation])
 
   useEffect(() => {
     const renderPage = async () => {
@@ -178,8 +187,9 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         }
 
         const page = await pdfDoc.getPage(actualPageIndex + 1)
+        const rotation = await getPdfRotation(page)
         const scale = (zoom / 100) * 2.35
-        const viewport = page.getViewport({ scale })
+        const viewport = page.getViewport({ scale, rotation })
 
         const canvas = canvasRef.current
         const context = canvas.getContext('2d')
@@ -198,7 +208,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
 
     renderPage()
-  }, [pdfDoc, currentPage, zoom, pageOrder, setCurrentPage])
+  }, [pdfDoc, currentPage, zoom, pageOrder, pageOrientation, setCurrentPage])
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if ((!isAddTextMode && activeTool !== 'text') || !canvasRef.current) return
@@ -362,6 +372,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const pageItems: PageRailItem[] = pageOrder.map((originalIndex, index) => ({
     id: String(index + 1),
     label: `Page ${index + 1}`,
+    fileType: 'pdf',
+    pageType: pageOrientation,
     // Use positional index — pageThumbnails is built sequentially from pageOrder
     thumbnail: originalIndex === -1 ? null : (pageThumbnails[index] ?? null),
     onClick: () => selectPdfPage(index + 1),
@@ -474,7 +486,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white p-0 sm:p-1 shadow-md">
-            <div ref={canvasContainerRef} className="relative mx-auto w-fit overflow-auto" style={{ maxHeight: 'calc(100vh - 170px)' }}>
+            <div ref={canvasContainerRef} className="relative mx-auto w-fit overflow-auto" style={{ maxHeight: 'calc(100vh - 170px)', transition: 'all 250ms ease' }}>
+            <div>
               <canvas
                 ref={canvasRef}
                 onClick={handleCanvasClick}
@@ -494,6 +507,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                   margin: '0 auto',
                 }}
               />
+            </div>
 
               {pageAnnotations.map((annotation) => (
                 <textarea

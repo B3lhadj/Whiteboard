@@ -54,7 +54,39 @@ export function calculateWordCount(text: string): number {
 export function calculateCharCount(text: string): number {
   return text.length
 }
+export interface PageDimensions {
+  layout: 'portrait' | 'landscape'
+  width: number
+  height: number
+  aspectRatio: string
+}
 
+export function getPageDimensions(fileType?: FileType, orientation?: 'portrait' | 'landscape'): PageDimensions {
+  // Determine base layout based on file type
+  const baseLayout = fileType === 'pptx' ? 'landscape' : 'portrait'
+
+  // Use provided orientation or fall back to base layout
+  const currentLayout = orientation || baseLayout
+
+  switch (currentLayout) {
+    case 'landscape':
+      return {
+        layout: 'landscape',
+        width: 1120, // ~16:9 aspect ratio width
+        height: 630, // ~16:9 aspect ratio height
+        aspectRatio: '16 / 9',
+      }
+
+    case 'portrait':
+    default:
+      return {
+        layout: 'portrait',
+        width: 794, // A4 width equivalent
+        height: 1123, // A4 height equivalent
+        aspectRatio: '210 / 297', // A4 aspect ratio
+      }
+  }
+}
 export function generateFileId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
 }

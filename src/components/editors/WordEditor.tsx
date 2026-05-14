@@ -7,7 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { calculateWordCount, calculateCharCount } from '../../utils'
+import { calculateWordCount, calculateCharCount, getPageDimensions } from '../../utils'
 import { AlertCircle } from 'lucide-react'
 import * as mammoth from 'mammoth'
 import { renderAsync } from 'docx-preview'
@@ -49,6 +49,8 @@ export default function WordEditor({ file }: WordEditorProps) {
   const setCharCount = useDocumentStore((state) => state.setCharCount)
   const setEditorHtml = useDocumentStore((state) => state.setEditorHtml)
   const addPage = useDocumentStore((state) => state.addPage)
+  const pageOrientation = useDocumentStore((state) => state.pageOrientation)
+  const pageDimensions = getPageDimensions(file.type, pageOrientation)
 
   /**
    * Replace Unicode ligature characters and special typographic glyphs
@@ -793,15 +795,20 @@ export default function WordEditor({ file }: WordEditorProps) {
 
   const activePageHtml = pagePreviews[safeCurrentPage - 1]?.html || fallbackHtml || undefined
 
+  const previewScale = pageOrientation === 'landscape' ? 0.14 : 0.19
+  const pageWidth = pageDimensions.width
+
   const pageItems: PageRailItem[] = pagePreviews.map((page, index) => ({
     id: String(index + 1),
     label: page.label,
     subtitle: page.subtitle,
+    fileType: 'word',
+    pageType: pageOrientation,
     preview: (
       <div className="word-preview-thumb flex h-full w-full items-start justify-center overflow-hidden bg-white">
         <div
           className="origin-top text-[8px]"
-          style={{ width: '794px', transform: 'scale(0.19)', transformOrigin: 'top center' }}
+          style={{ width: `${pageWidth}px`, transform: `scale(${previewScale})`, transformOrigin: 'top center' }}
           dangerouslySetInnerHTML={{ __html: page.html }}
         />
       </div>
@@ -909,8 +916,11 @@ export default function WordEditor({ file }: WordEditorProps) {
               transform: `scale(${(zoom * 1.12) / 100})`,
               transformOrigin: 'top center',
               color: '#333',
-              width: 'max-content',
-              minWidth: '100%',
+              width: `${pageDimensions.width}px`,
+              minWidth: 'unset',
+              maxWidth: '100%',
+              minHeight: `${pageDimensions.height}px`,
+              transition: 'width 250ms ease, min-height 250ms ease, transform 250ms ease',
             }}
             onPointerDown={handleToolPointerDown}
             onKeyDown={applyCurrentTypingColor}

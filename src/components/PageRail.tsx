@@ -1,6 +1,18 @@
 import type { ReactNode } from 'react'
 import { useState, useEffect, useRef } from 'react'
-import { Trash2, Plus, GripVertical, PanelLeftOpen, X, Maximize2, Minimize2 } from 'lucide-react'
+import {
+  Trash2,
+  Plus,
+  GripVertical,
+  PanelLeftOpen,
+  X,
+  Maximize2,
+  Minimize2,
+  FileText,
+  File,
+  Layout,
+  Image as ImageIcon,
+} from 'lucide-react'
 
 export interface PageRailItem {
   id: string
@@ -8,6 +20,8 @@ export interface PageRailItem {
   subtitle?: string
   thumbnail?: string | null
   preview?: ReactNode
+  fileType?: 'pdf' | 'word' | 'powerpoint' | 'image' | 'other'
+  pageType?: 'portrait' | 'landscape' | 'auto'
   onClick: () => void
   onDelete?: () => void
   onDragStart?: (index: number) => void
@@ -110,6 +124,93 @@ export default function PageRail({
       }
       return next
     })
+  }
+
+  const getPreviewOrientation = (item: PageRailItem) => {
+    if (item.pageType && item.pageType !== 'auto') {
+      return item.pageType
+    }
+
+    switch (item.fileType) {
+      case 'powerpoint':
+        return 'landscape'
+      case 'image':
+        return 'auto'
+      case 'pdf':
+      case 'word':
+      case 'other':
+      default:
+        return 'portrait'
+    }
+  }
+
+  const getPreviewBadge = (item: PageRailItem) => {
+    const base = {
+      label: 'PAGE',
+      icon: <File size={10} className="text-slate-500" />,
+      classes: 'bg-slate-100 text-slate-600 border-slate-200',
+    }
+
+    if (!item.fileType) {
+      return item.pageType
+        ? {
+            label: item.pageType.toUpperCase(),
+            icon: <FileText size={10} className="text-slate-500" />,
+            classes: 'bg-slate-100 text-slate-600 border-slate-200',
+          }
+        : base
+    }
+
+    switch (item.fileType) {
+      case 'pdf':
+        return {
+          label: 'PDF',
+          icon: <FileText size={10} className="text-red-600" />,
+          classes: 'bg-red-50 text-red-700 border-red-100',
+        }
+      case 'word':
+        return {
+          label: 'DOCX',
+          icon: <FileText size={10} className="text-sky-600" />,
+          classes: 'bg-sky-50 text-sky-700 border-sky-100',
+        }
+      case 'powerpoint':
+        return {
+          label: 'PPT',
+          icon: <Layout size={10} className="text-orange-600" />,
+          classes: 'bg-orange-50 text-orange-700 border-orange-100',
+        }
+      case 'image':
+        return {
+          label: 'IMG',
+          icon: <ImageIcon size={10} className="text-emerald-600" />,
+          classes: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+        }
+      default:
+        return base
+    }
+  }
+
+  const renderPreviewContent = (item: PageRailItem) => {
+    if (item.preview) {
+      return item.preview
+    }
+
+    if (item.thumbnail) {
+      return (
+        <img
+          src={item.thumbnail}
+          alt={item.label}
+          className="h-full w-full object-contain"
+        />
+      )
+    }
+
+    return (
+      <div className="flex h-full w-full items-center justify-center text-[10px] uppercase tracking-[0.2em] text-slate-400">
+        No preview
+      </div>
+    )
   }
 
   const sidebarContent = (
@@ -216,25 +317,41 @@ export default function PageRail({
                       </span>
                     </div>
 
-                    <div className="screen-preview-scroll h-56 overflow-auto rounded-lg border-2 border-gray-300 bg-white shadow-sm">
-                      {item.preview ? (
-                        item.preview
-                      ) : item.thumbnail ? (
-                        <img
-                          src={item.thumbnail}
-                          alt={item.label}
-                          className="h-full w-full rounded-md object-contain"
-                        />
-                      ) : (
-                        <div className="p-2">
-                          <div className="mb-1 h-1.5 w-10 rounded-full bg-gray-300" />
-                          <div className="space-y-1.5">
-                            <div className="h-2 rounded bg-gray-200" />
-                            <div className="h-2 rounded bg-gray-200 w-5/6" />
-                            <div className="h-2 rounded bg-gray-200 w-2/3" />
-                          </div>
-                        </div>
-                      )}
+                    <div className="screen-preview-scroll overflow-auto rounded-3xl border border-gray-200 bg-slate-100 shadow-sm transition-all duration-300 ease-out">
+                      <div className="mx-auto flex w-full items-center justify-center p-3">
+                        {(() => {
+                          const orientation = getPreviewOrientation(item)
+                          const badge = getPreviewBadge(item)
+                          const aspectRatio =
+                            orientation === 'landscape'
+                              ? '16 / 9'
+                              : orientation === 'auto'
+                              ? undefined
+                              : '210 / 297'
+
+                          return (
+                            <div
+                              className={`relative w-full overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-[0_16px_40px_rgba(15,23,42,0.08)] transition-all duration-300 ease-out ${
+                                orientation === 'landscape' ? 'max-w-[22rem]' : 'max-w-[18rem]'
+                              }`}
+                              style={aspectRatio ? { aspectRatio } : { maxWidth: '100%' }}
+                            >
+                              <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-center gap-2">
+                                <span className={`flex items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${badge.classes}`}>
+                                  {badge.icon}
+                                  {badge.label}
+                                </span>
+                                <span className="hidden rounded-full bg-slate-100 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-slate-500 sm:inline">
+                                  {orientation === 'landscape' ? 'Slide' : orientation === 'auto' ? 'Image' : 'Page'}
+                                </span>
+                              </div>
+                              <div className="h-full w-full overflow-auto p-2 sm:p-3">
+                                {renderPreviewContent(item)}
+                              </div>
+                            </div>
+                          )
+                        })()}
+                      </div>
                     </div>
 
                     {item.subtitle && (

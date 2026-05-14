@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
+import { getPageDimensions } from '../../utils'
 import JSZip from 'jszip'
 import { Move, Plus, Type, Trash2 } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
@@ -98,6 +99,8 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const textColor = useDocumentStore((state) => state.textColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
+  const pageOrientation = useDocumentStore((state) => state.pageOrientation)
+  const pageDimensions = getPageDimensions(file.type, pageOrientation)
 
   const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
 
@@ -721,6 +724,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
     id: String(index + 1),
     label: `Slide ${index + 1}`,
     subtitle: slide.title,
+    fileType: 'powerpoint',
     thumbnail: slide.thumbnailData ?? null,
     onClick: () => handleSlideChange(index + 1),
     onDelete: !file.viewOnly ? () => handleDeleteSlide(slide.id) : undefined,
@@ -1074,11 +1078,13 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             data-ppt-slide="true"
             onClick={handleSlideCanvasClick}
             style={{
-              aspectRatio: '16 / 9',
-              width: `min(${1180 * slideZoom}px, calc(100vw - 1rem))`,
+              aspectRatio: pageDimensions.aspectRatio,
+              width: `min(${pageDimensions.width}px, calc(100vw - 1rem))`,
+              height: `${pageDimensions.height}px`,
               maxWidth: 'none',
               maxHeight: 'none',
               backgroundColor: activeSlide.backgroundColor || '#ffffff',
+              transition: 'width 250ms ease, height 250ms ease, aspect-ratio 250ms ease',
             }}
           >
             {isRenderedSlide && activeSlide.imageData ? (
