@@ -11,6 +11,7 @@ import PowerPointEditor from './editors/PowerPointEditor'
 import PDFEditor from './editors/PDFEditor'
 import ExcelEditor from './editors/ExcelEditor'
 import ImageEditor from './editors/ImageEditor'
+import WhiteboardEditor from './editors/WhiteboardEditor'
 
 interface EditorViewProps {
   file: DocumentFile
@@ -649,6 +650,7 @@ export default function EditorView({ file }: EditorViewProps) {
             <ImageEditor file={file} />
           </div>
         )}
+        {file.type === 'whiteboard' && <WhiteboardEditor file={file} />}
       </div>
 
       <div data-print-hidden="true">

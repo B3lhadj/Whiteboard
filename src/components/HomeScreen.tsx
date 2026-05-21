@@ -19,6 +19,20 @@ export default function HomeScreen() {
   const recentFiles = useDocumentStore((state) => state.recentFiles)
   const removeRecentFile = useDocumentStore((state) => state.removeRecentFile)
 
+  const handleNewWhiteboard = () => {
+    const whiteboardFile: DocumentFile = {
+      id: generateFileId(),
+      name: `Whiteboard-${new Date().toLocaleString()}`,
+      type: 'whiteboard',
+      size: 0,
+      content: new ArrayBuffer(0),
+      uploadedAt: Date.now(),
+    }
+    addRecentFile(whiteboardFile)
+    setCurrentFile(whiteboardFile)
+    showSuccessToast('New whiteboard created', 'whiteboard')
+  }
+
   const openFileDialog = (accept: string, type: FileType = selectedUploadType) => {
     setSelectedUploadType(type)
     if (fileInputRef.current) {
@@ -212,7 +226,7 @@ export default function HomeScreen() {
             <div className="diamond-container">
               <div
                 className="diamond-single"
-                onClick={() => openFileDialog('.pdf,.docx,.pptx,.xlsx,.xlsm,.xls', selectedUploadType)}
+                onClick={handleNewWhiteboard}
               >
                 <div className="diamond-content">
                   <img src={whiteboardIcon} alt="WhiteBoard" className="diamond-icon" />

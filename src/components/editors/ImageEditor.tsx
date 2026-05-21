@@ -2,7 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { DocumentFile, useDocumentStore } from '../../store';
 import EditorNavigation from '../EditorNavigation';
-
+import { getThemeForFileType } from '../../utils'
 
 interface ImageEditorProps {
   file: DocumentFile;
@@ -13,6 +13,7 @@ export default function ImageEditor({ file }: ImageEditorProps) {
   const imageRef = useRef<HTMLImageElement>(null);
   const zoom = useDocumentStore((state) => state.zoom);
   const setEditorHtml = useDocumentStore((state) => state.setEditorHtml);
+  const themeColor = getThemeForFileType(file.type)
 
   // Load image from file content
   useEffect(() => {
@@ -108,6 +109,7 @@ export default function ImageEditor({ file }: ImageEditorProps) {
         onPrevious={() => undefined}
         onNext={() => undefined}
         className="shrink-0 border-t border-gray-200 bg-gray-100"
+        themeColor={themeColor}  // Add this line
       />
     </div>
   );

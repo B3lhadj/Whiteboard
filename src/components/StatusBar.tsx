@@ -27,6 +27,8 @@ export default function StatusBar({ file }: StatusBarProps) {
         return 'text-[#e02b20] accent-[#e02b20]'
       case 'image':
         return 'text-[#0ea5a4] accent-[#0ea5a4]'
+      case 'whiteboard':
+        return 'text-[#7c3aed] accent-[#7c3aed]'
       default:
         return 'text-[#217346] accent-[#217346]'
     }

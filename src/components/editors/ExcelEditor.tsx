@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx'
 import { AlertCircle, Plus } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
+import { getThemeForFileType } from '../../utils' // Add this import
 
 interface ExcelEditorProps {
   file: DocumentFile
@@ -59,6 +60,9 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
   const setCharCount = useDocumentStore((state) => state.setCharCount)
   const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
   const [topScrollbarWidth, setTopScrollbarWidth] = useState<number | string>('100%')
+  
+  // Add theme color based on file type
+  const themeColor = getThemeForFileType(file.type)
 
   const activeSheetName = sheets[selectedSheet]
   const activeData = activeSheetName ? sheetsData[activeSheetName] || [] : []
@@ -71,6 +75,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
 
   const getCellKey = (rowIndex: number, colIndex: number) => `${rowIndex}:${colIndex}`
   const selectedCellKey = getCellKey(selectedCell.row, selectedCell.col)
+  
   useEffect(() => {
     const loadExcel = async () => {
       try {
@@ -380,6 +385,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
             previousLabel="Back"
             nextLabel="Next"
             className="sticky top-0 z-30 border-b border-gray-200 bg-gray-100/95 backdrop-blur"
+            themeColor={themeColor} // Add this line
           />
 
           {sheets.length > 1 && (

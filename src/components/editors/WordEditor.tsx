@@ -13,6 +13,7 @@ import * as mammoth from 'mammoth'
 import { renderAsync } from 'docx-preview'
 import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
+import { getThemeForFileType } from '../../utils'
 
 interface WordPagePreview {
   id: string
@@ -51,6 +52,10 @@ export default function WordEditor({ file }: WordEditorProps) {
   const addPage = useDocumentStore((state) => state.addPage)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
   const pageDimensions = getPageDimensions(file.type, pageOrientation)
+  
+  // Use originalType for PDFs that were converted to Word
+  const actualFileType = file.originalType || file.type
+  const themeColor = getThemeForFileType(actualFileType)
 
   /**
    * Replace Unicode ligature characters and special typographic glyphs
@@ -903,15 +908,14 @@ export default function WordEditor({ file }: WordEditorProps) {
             ref={editorRef}
             contentEditable
             spellCheck={false}
-            className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
-              activeTool === 'text'
-                ? 'cursor-text'
-                : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
+            className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${activeTool === 'text'
+              ? 'cursor-text'
+              : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
                 ? 'cursor-crosshair'
                 : activeTool === 'erase'
-                ? 'cursor-not-allowed'
-                : 'cursor-text'
-            }`}
+                  ? 'cursor-not-allowed'
+                  : 'cursor-text'
+              }`}
             style={{
               transform: `scale(${(zoom * 1.12) / 100})`,
               transformOrigin: 'top center',
@@ -955,6 +959,7 @@ export default function WordEditor({ file }: WordEditorProps) {
           onPrevious={() => handleWordPageChange(safeCurrentPage - 1)}
           onNext={() => handleWordPageChange(safeCurrentPage + 1)}
           className="shrink-0 border-t border-gray-200 bg-white"
+          themeColor={themeColor}
         />
       </div>
 
@@ -962,7 +967,7 @@ export default function WordEditor({ file }: WordEditorProps) {
         title="SCREENS"
         items={pageItems}
         activeId={String(safeCurrentPage)}
-        accentColor="#2563eb"
+        accentColor={getThemeForFileType(file.originalType || file.type)}
         side="right"
         onAddStep={() => {
           addPage()

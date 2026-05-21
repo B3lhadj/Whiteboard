@@ -20,6 +20,7 @@ export function getThemeForFileType(fileType: FileType): string {
     pptx: '#c2410c',
     pdf: '#dc2626',
     image: '#0891b2',
+    whiteboard: '#7c3aed',
     default: '#2b579a',
   }
   return themes[fileType || 'default'] || themes.default
@@ -31,6 +32,8 @@ export function getThemeNameForFileType(fileType: FileType): string {
     xlsx: 'Excel Green',
     pptx: 'PowerPoint Red',
     pdf: 'Adobe Red',
+    image: 'Image Cyan',
+    whiteboard: 'Whiteboard Purple',
     default: 'Default Blue',
   }
   return names[fileType || 'default'] || 'Default'

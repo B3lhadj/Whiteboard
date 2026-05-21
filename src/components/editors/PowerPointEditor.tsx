@@ -6,6 +6,7 @@ import { Move, Plus, Type, Trash2 } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
+import { getThemeForFileType } from '../../utils'
 
 interface TextRun {
   text: string
@@ -89,6 +90,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const [isAddingText, setIsAddingText] = useState(false)
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null)
   const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
+  const themeColor = getThemeForFileType(file.type)
 
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
@@ -324,10 +326,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             ext === 'jpg' || ext === 'jpeg'
               ? 'image/jpeg'
               : ext === 'png'
-              ? 'image/png'
-              : ext === 'gif'
-              ? 'image/gif'
-              : 'image/png'
+                ? 'image/png'
+                : ext === 'gif'
+                  ? 'image/gif'
+                  : 'image/png'
 
           // Extract position and size from shapes that use this image
           let x = 0 // percent of slide width
@@ -1018,11 +1020,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                   loadEditableSlides(true)
                 }
               }}
-              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
-                isObjectEditMode
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${isObjectEditMode
                   ? 'border-red-600 bg-red-600 text-white'
                   : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
-              }`}
+                }`}
             >
               {isLoadingEditable ? 'Loading objects...' : isObjectEditMode ? 'Preview' : 'Edit Objects'}
             </button>
@@ -1031,11 +1032,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
           {!file.viewOnly && (isRenderedSlide || isObjectEditMode) && (
             <button
               onClick={() => setIsAddingText((value) => !value)}
-              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
-                isAddingText
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${isAddingText
                   ? 'border-red-600 bg-red-600 text-white'
                   : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
-              }`}
+                }`}
             >
               <Type size={14} />
               {isAddingText ? 'Click slide' : 'Add Text'}
@@ -1048,11 +1048,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                 setAreImagesEditable((value) => !value)
                 setSelectedImageIndex(null)
               }}
-              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
-                areImagesEditable
+              className={`flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${areImagesEditable
                   ? 'border-amber-500 bg-amber-500 text-white'
                   : 'border-gray-300 bg-white text-gray-700 hover:border-gray-400'
-              }`}
+                }`}
             >
               {areImagesEditable ? 'Images Editable' : 'Images Locked'}
             </button>
@@ -1061,11 +1060,10 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
           {!isRenderedSlide && (
             <button
               onClick={() => toggleViewMode()}
-              className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${
-                file.viewOnly
+              className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${file.viewOnly
                   ? 'bg-blue-600 text-white border-blue-600'
                   : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
-              }`}
+                }`}
             >
               {file.viewOnly ? 'View mode' : 'Edit mode'}
             </button>
@@ -1115,9 +1113,8 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                         onFocus={() => setSelectedOverlayId(overlay.id)}
                         onClick={() => setSelectedOverlayId(overlay.id)}
                         onInput={(event) => handleOverlayTextInput(overlay.id, event.currentTarget)}
-                        className={`min-w-[80px] max-w-[420px] whitespace-pre-wrap px-1 font-semibold leading-tight outline-none ${
-                          isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''
-                        }`}
+                        className={`min-w-[80px] max-w-[420px] whitespace-pre-wrap px-1 font-semibold leading-tight outline-none ${isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''
+                          }`}
                         style={{
                           color: overlay.color,
                           fontSize: `${overlay.fontSize}px`,
@@ -1174,13 +1171,12 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                       <img
                         src={img.data}
                         alt=""
-                        className={`h-full w-full object-contain ${
-                          areImagesEditable
+                        className={`h-full w-full object-contain ${areImagesEditable
                             ? isSelected
                               ? 'outline outline-2 outline-amber-500'
                               : 'outline outline-1 outline-transparent group-hover:outline-amber-400'
                             : ''
-                        }`}
+                          }`}
                         draggable={false}
                       />
                       {areImagesEditable && isSelected && (
@@ -1221,8 +1217,8 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                           box.alignment === 'ctr'
                             ? 'center'
                             : box.alignment === 'r'
-                            ? 'right'
-                            : 'left',
+                              ? 'right'
+                              : 'left',
                       }}
                       onClick={(event) => event.stopPropagation()}
                     >
@@ -1282,13 +1278,12 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                     {activeSlide.textElements.map((textElement, index) => (
                       <div
                         key={index}
-                        className={`${
-                          textElement.type === 'title'
+                        className={`${textElement.type === 'title'
                             ? 'mb-6'
                             : textElement.type === 'subtitle'
-                            ? 'mb-4'
-                            : 'mb-3'
-                        }`}
+                              ? 'mb-4'
+                              : 'mb-3'
+                          }`}
                         style={{
                           paddingLeft: textElement.isBullet
                             ? `${(textElement.level || 0) * 24 + 16}px`
@@ -1297,8 +1292,8 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                             textElement.alignment === 'ctr'
                               ? 'center'
                               : textElement.alignment === 'r'
-                              ? 'right'
-                              : 'left',
+                                ? 'right'
+                                : 'left',
                         }}
                       >
                         <div className="flex items-start gap-3">
@@ -1399,6 +1394,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             onPrevious={() => handleSlideChange(Math.max(1, currentPage - 1))}
             onNext={() => handleSlideChange(Math.min(slides.length, currentPage + 1))}
             className="sticky bottom-0 z-20 mt-4 border-t border-gray-200 bg-white/95 backdrop-blur"
+            themeColor=""
           />
         )}
 

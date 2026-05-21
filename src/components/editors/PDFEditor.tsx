@@ -7,6 +7,7 @@ import { showErrorToast } from '../../utils/toast'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
+import { getThemeForFileType } from '../../utils'
 
 interface PDFEditorProps {
   file: DocumentFile
@@ -42,6 +43,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
+  const themeColor = getThemeForFileType(file.type)
 
   const currentFile = useDocumentStore((state) => state.currentFile)
   const currentPage = useDocumentStore((state) => state.currentPage)
@@ -378,21 +380,21 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     thumbnail: originalIndex === -1 ? null : (pageThumbnails[index] ?? null),
     onClick: () => selectPdfPage(index + 1),
     onDelete: !viewOnly ? () => {
-        const newOrder = pageOrder.filter((_, i) => i !== index)
-        updatePageOrder(newOrder)
+      const newOrder = pageOrder.filter((_, i) => i !== index)
+      updatePageOrder(newOrder)
 
-        // Immediately rebuild thumbnails for the remaining pages
-        setPageThumbnails((prev) => prev.filter((_, i) => i !== index))
+      // Immediately rebuild thumbnails for the remaining pages
+      setPageThumbnails((prev) => prev.filter((_, i) => i !== index))
 
-        // Always validate and update currentPage to ensure valid state
-        if (newOrder.length === 0) {
-          setCurrentPage(1)
-        } else if (currentPage > newOrder.length) {
-          setCurrentPage(newOrder.length)
-        } else if (currentPage === index + 1) {
-          // If we deleted the current page, show the next page or go back
-          setCurrentPage(Math.min(index + 1, newOrder.length))
-        }
+      // Always validate and update currentPage to ensure valid state
+      if (newOrder.length === 0) {
+        setCurrentPage(1)
+      } else if (currentPage > newOrder.length) {
+        setCurrentPage(newOrder.length)
+      } else if (currentPage === index + 1) {
+        // If we deleted the current page, show the next page or go back
+        setCurrentPage(Math.min(index + 1, newOrder.length))
+      }
     } : undefined,
   }))
 
@@ -448,11 +450,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         <div className="absolute top-4 right-6 z-20">
           <button
             onClick={() => toggleViewMode()}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${
-              viewOnly
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${viewOnly
                 ? 'bg-blue-600 text-white border-blue-600'
                 : 'bg-white text-gray-700 border-gray-300 hover:border-gray-400'
-            }`}
+              }`}
           >
             {viewOnly ? 'View mode' : 'Edit mode'}
           </button>
@@ -463,11 +464,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
             <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 onClick={() => setIsAddTextMode((v) => !v)}
-                className={`flex items-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors ${
-                  isAddTextMode
+                className={`flex items-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors ${isAddTextMode
                     ? 'bg-red-600 text-white'
                     : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
-                }`}
+                  }`}
                 title="Add text annotation"
               >
                 <Type size={16} />
@@ -487,27 +487,26 @@ export default function PDFEditor({ file }: PDFEditorProps) {
 
           <div className="rounded-lg border border-gray-200 bg-white p-0 sm:p-1 shadow-md">
             <div ref={canvasContainerRef} className="relative mx-auto w-fit overflow-auto" style={{ maxHeight: 'calc(100vh - 170px)', transition: 'all 250ms ease' }}>
-            <div>
-              <canvas
-                ref={canvasRef}
-                onClick={handleCanvasClick}
-                className={`rounded border border-gray-100 h-auto ${
-                  isAddTextMode || activeTool === 'text'
-                    ? 'cursor-crosshair'
-                    : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
-                    ? 'cursor-crosshair'
-                    : 'cursor-default'
-                }`}
-                style={{
-                  maxWidth: 'none',
-                  width: 'auto',
-                  height: 'auto',
-                  maxHeight: 'none',
-                  display: 'block',
-                  margin: '0 auto',
-                }}
-              />
-            </div>
+              <div>
+                <canvas
+                  ref={canvasRef}
+                  onClick={handleCanvasClick}
+                  className={`rounded border border-gray-100 h-auto ${isAddTextMode || activeTool === 'text'
+                      ? 'cursor-crosshair'
+                      : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
+                        ? 'cursor-crosshair'
+                        : 'cursor-default'
+                    }`}
+                  style={{
+                    maxWidth: 'none',
+                    width: 'auto',
+                    height: 'auto',
+                    maxHeight: 'none',
+                    display: 'block',
+                    margin: '0 auto',
+                  }}
+                />
+              </div>
 
               {pageAnnotations.map((annotation) => (
                 <textarea
@@ -516,9 +515,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                   onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
                   onFocus={() => setSelectedAnnotationId(annotation.id)}
                   rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
-                  className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
-                    selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
-                  }`}
+                  className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
+                    }`}
                   style={{
                     left: `${annotation.xRatio * 100}%`,
                     top: `${annotation.yRatio * 100}%`,
@@ -598,13 +596,14 @@ export default function PDFEditor({ file }: PDFEditorProps) {
               </div>
             )}
           </div>
-          <EditorNavigation
-            current={currentPage}
-            total={pageOrder.length}
-            onPrevious={() => setCurrentPage(Math.max(1, currentPage - 1))}
-            onNext={() => setCurrentPage(Math.min(pageOrder.length, currentPage + 1))}
-            className="sticky bottom-0 z-20 border-t border-gray-200 bg-gray-100/95 backdrop-blur"
-          />
+       <EditorNavigation
+  current={currentPage}
+  total={pageOrder.length}
+  onPrevious={() => setCurrentPage(Math.max(1, currentPage - 1))}
+  onNext={() => setCurrentPage(Math.min(pageOrder.length, currentPage + 1))}
+  className="sticky bottom-0 z-20 border-t border-gray-200 bg-gray-100/95 backdrop-blur"
+  themeColor="#dc2626"  // ✅ Add this line
+/>
         </div>
       </div>
 
@@ -615,8 +614,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         accentColor="#dc2626"
         side="right"
         onAddStep={!viewOnly ? () => {
-            addPage()
-            setCurrentPage(pageOrder.length + 1)
+          addPage()
+          setCurrentPage(pageOrder.length + 1)
         } : undefined}
         onReorder={!viewOnly ? handleReorder : undefined}
       />

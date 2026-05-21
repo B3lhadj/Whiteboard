@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | null
+export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | 'whiteboard' | null
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
 export type ToolbarTool = 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase'
 export type ToastType = 'success' | 'error' | 'info'

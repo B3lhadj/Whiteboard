@@ -8,6 +8,7 @@ interface EditorNavigationProps {
   previousLabel?: string
   nextLabel?: string
   className?: string
+  themeColor?: string
 }
 
 export default function EditorNavigation({
@@ -18,6 +19,7 @@ export default function EditorNavigation({
   previousLabel = 'Previous',
   nextLabel = 'Next',
   className = '',
+  themeColor = '#dc2626',
 }: EditorNavigationProps) {
   const safeTotal = Math.max(1, total)
   const safeCurrent = Math.min(Math.max(1, current), safeTotal)
@@ -27,7 +29,21 @@ export default function EditorNavigation({
       <button
         onClick={onPrevious}
         disabled={safeCurrent <= 1}
-        className="flex h-12 min-w-[140px] items-center justify-center gap-2 rounded-lg bg-red-600 px-6 text-base font-bold text-white shadow-lg transition-all hover:bg-red-700 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        className="flex h-12 min-w-[140px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        style={{ 
+          backgroundColor: themeColor,
+          transition: 'background-color 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          if (safeCurrent > 1) {
+            e.currentTarget.style.backgroundColor = '#b91c1c'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (safeCurrent > 1) {
+            e.currentTarget.style.backgroundColor = themeColor
+          }
+        }}
         title={previousLabel}
       >
         <ChevronLeft size={22} />
@@ -39,7 +55,21 @@ export default function EditorNavigation({
       <button
         onClick={onNext}
         disabled={safeCurrent >= safeTotal}
-        className="flex h-12 min-w-[112px] items-center justify-center gap-2 rounded-lg bg-red-600 px-6 text-base font-bold text-white shadow-lg transition-all hover:bg-red-700 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        className="flex h-12 min-w-[112px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        style={{ 
+          backgroundColor: themeColor,
+          transition: 'background-color 0.2s ease',
+        }}
+        onMouseEnter={(e) => {
+          if (safeCurrent < safeTotal) {
+            e.currentTarget.style.backgroundColor = '#b91c1c'
+          }
+        }}
+        onMouseLeave={(e) => {
+          if (safeCurrent < safeTotal) {
+            e.currentTarget.style.backgroundColor = themeColor
+          }
+        }}
         title={nextLabel}
       >
         {nextLabel}
