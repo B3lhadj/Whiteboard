@@ -1,5 +1,6 @@
 node_modules/
 dist/
+vegasystem/
 .DS_Store
 *.local
 *.pem

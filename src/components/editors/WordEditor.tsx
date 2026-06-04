@@ -2,12 +2,14 @@ import {
   useEffect,
   useState,
   useRef,
+  type CSSProperties,
   type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { calculateWordCount, calculateCharCount, getPageDimensions } from '../../utils'
+import { calculateWordCount, calculateCharCount, getEditorLanguageSettings, getPageDimensions } from '../../utils'
+import { getPageMargins } from '../../pageLayout'
 import { AlertCircle } from 'lucide-react'
 import * as mammoth from 'mammoth'
 import { renderAsync } from 'docx-preview'
@@ -43,6 +45,7 @@ export default function WordEditor({ file }: WordEditorProps) {
   const textColor = useDocumentStore((state) => state.textColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
+  const selectedLanguage = useDocumentStore((state) => state.selectedLanguage)
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const setWordCount = useDocumentStore((state) => state.setWordCount)
@@ -50,7 +53,13 @@ export default function WordEditor({ file }: WordEditorProps) {
   const setEditorHtml = useDocumentStore((state) => state.setEditorHtml)
   const addPage = useDocumentStore((state) => state.addPage)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
-  const pageDimensions = getPageDimensions(file.type, pageOrientation)
+  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const pageSize = useDocumentStore((state) => state.pageSize)
+  const pageColumns = useDocumentStore((state) => state.pageColumns)
+  const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
+  const pageMargins = getPageMargins(pageMarginPreset)
+  const pageColumnGap = pageColumns > 1 ? 32 : 0
+  const languageSettings = getEditorLanguageSettings(selectedLanguage)
 
   /**
    * Replace Unicode ligature characters and special typographic glyphs
@@ -203,6 +212,16 @@ export default function WordEditor({ file }: WordEditorProps) {
 
     loadDocument()
   }, [file.content, setCharCount, setCurrentPage, setEditorHtml, setWordCount])
+
+  useEffect(() => {
+    const container = editorRef.current
+    if (!container) return
+
+    container.setAttribute('lang', languageSettings.lang)
+    container.setAttribute('dir', languageSettings.dir)
+    container.spellcheck = true
+    container.style.direction = languageSettings.dir
+  }, [languageSettings.dir, languageSettings.lang])
 
   const updateCounts = (html: string) => {
     const text = html.replace(/<[^>]*>/g, '')
@@ -634,6 +653,102 @@ export default function WordEditor({ file }: WordEditorProps) {
     document.execCommand('fontName', false, textFontFamily)
   }
 
+  const getRangeFromPoint = (x: number, y: number) => {
+    const documentWithCaret = document as Document & {
+      caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null
+      caretPositionFromPoint?: (clientX: number, clientY: number) => { offsetNode: Node; offset: number } | null
+    }
+
+    const range = documentWithCaret.caretRangeFromPoint?.(x, y)
+    if (range) return range
+
+    const position = documentWithCaret.caretPositionFromPoint?.(x, y)
+    if (!position) return null
+
+    const nextRange = document.createRange()
+    nextRange.setStart(position.offsetNode, position.offset)
+    nextRange.collapse(true)
+    return nextRange
+  }
+
+  const getClickedCheckboxGlyph = (text: string, offset: number) => {
+    const checkboxGlyphs = new Set(['□', '☐', '☒', '☑', '▢', '▫', '◻', '▣', '■', '◼'])
+    const candidates = [offset, offset - 1, offset + 1]
+    return candidates.find((index) => checkboxGlyphs.has(text[index])) ?? -1
+  }
+
+  const getChoiceLineRoot = (node: Node) => {
+    const element = node instanceof HTMLElement ? node : node.parentElement
+    if (!element) return null
+
+    const blockTags = new Set(['P', 'LI', 'TD', 'TH', 'TR'])
+    const hasChoiceBoxes = (text: string) => (text.match(/[□☐☒☑▢▫◻▣■◼]/g) || []).length >= 2
+    let current: HTMLElement | null = element
+
+    while (current && current !== editorRef.current) {
+      const text = current.textContent || ''
+      if (blockTags.has(current.tagName)) return current
+      if (text.length <= 260 && hasChoiceBoxes(text)) return current
+      current = current.parentElement
+    }
+
+    return null
+  }
+
+  const collectTextNodes = (root: HTMLElement) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const nodes: Text[] = []
+    let current = walker.nextNode()
+    while (current) {
+      nodes.push(current as Text)
+      current = walker.nextNode()
+    }
+    return nodes
+  }
+
+  const selectChoiceCheckbox = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const container = editorRef.current
+    if (!container) return false
+
+    if (event.target instanceof HTMLInputElement && event.target.type === 'checkbox') {
+      const lineRoot = getChoiceLineRoot(event.target)
+      if (!lineRoot || !container.contains(lineRoot)) return false
+
+      lineRoot.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
+        input.checked = input === event.target
+        if (input.checked) {
+          input.setAttribute('checked', 'checked')
+        } else {
+          input.removeAttribute('checked')
+        }
+      })
+      syncEditorState()
+      return true
+    }
+
+    const range = getRangeFromPoint(event.clientX, event.clientY)
+    const textNode = range?.startContainer
+    if (!(textNode instanceof Text) || !container.contains(textNode)) return false
+
+    const text = textNode.nodeValue || ''
+    const glyphIndex = getClickedCheckboxGlyph(text, range.startOffset)
+    if (glyphIndex < 0) return false
+
+    const lineRoot = getChoiceLineRoot(textNode)
+    if (!lineRoot || !container.contains(lineRoot)) return false
+
+    for (const node of collectTextNodes(lineRoot)) {
+      node.nodeValue = (node.nodeValue || '').replace(/[☒☑▣■◼]/g, '□')
+    }
+
+    const updatedText = textNode.nodeValue || ''
+    textNode.nodeValue =
+      updatedText.slice(0, glyphIndex) + '☒' + updatedText.slice(glyphIndex + 1)
+
+    syncEditorState()
+    return true
+  }
+
   const beginMoveToolObject = (event: ReactPointerEvent<HTMLDivElement>, object: HTMLElement) => {
     const editableTarget = event.target instanceof HTMLElement
       ? event.target.closest('[contenteditable="true"]')
@@ -667,6 +782,11 @@ export default function WordEditor({ file }: WordEditorProps) {
 
     const target = event.target as HTMLElement
     const selectedObject = target.closest('.word-tool-object') as HTMLElement | null
+
+    if (!selectedObject && selectChoiceCheckbox(event)) {
+      event.preventDefault()
+      return
+    }
 
     if (activeTool === 'select') {
       if (selectedObject) {
@@ -704,7 +824,7 @@ export default function WordEditor({ file }: WordEditorProps) {
         'word-textbox-object',
         point.x,
         point.y,
-        `<div contenteditable="true" spellcheck="false" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px;">Text box</div>`
+        `<div contenteditable="true" spellcheck="true" lang="${languageSettings.lang}" dir="${languageSettings.dir}" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px; direction: ${languageSettings.dir};">Text box</div>`
       )
       const editable = textBox?.querySelector('[contenteditable="true"]') as HTMLElement | null
       editable?.focus()
@@ -797,6 +917,16 @@ export default function WordEditor({ file }: WordEditorProps) {
 
   const previewScale = pageOrientation === 'landscape' ? 0.14 : 0.19
   const pageWidth = pageDimensions.width
+  const wordPageStyle = {
+    '--word-page-width': `${pageDimensions.width}px`,
+    '--word-page-height': `${pageDimensions.height}px`,
+    '--word-page-margin-top': `${pageMargins.top}px`,
+    '--word-page-margin-right': `${pageMargins.right}px`,
+    '--word-page-margin-bottom': `${pageMargins.bottom}px`,
+    '--word-page-margin-left': `${pageMargins.left}px`,
+    '--word-page-column-count': pageColumns,
+    '--word-page-column-gap': `${pageColumnGap}px`,
+  } as CSSProperties
 
   const pageItems: PageRailItem[] = pagePreviews.map((page, index) => ({
     id: String(index + 1),
@@ -808,7 +938,12 @@ export default function WordEditor({ file }: WordEditorProps) {
       <div className="word-preview-thumb flex h-full w-full items-start justify-center overflow-hidden bg-white">
         <div
           className="origin-top text-[8px]"
-          style={{ width: `${pageWidth}px`, transform: `scale(${previewScale})`, transformOrigin: 'top center' }}
+          style={{
+            ...wordPageStyle,
+            width: `${pageWidth}px`,
+            transform: `scale(${previewScale})`,
+            transformOrigin: 'top center',
+          }}
           dangerouslySetInnerHTML={{ __html: page.html }}
         />
       </div>
@@ -902,7 +1037,9 @@ export default function WordEditor({ file }: WordEditorProps) {
             data-print-document="true"
             ref={editorRef}
             contentEditable
-            spellCheck={false}
+            spellCheck
+            lang={languageSettings.lang}
+            dir={languageSettings.dir}
             className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
               activeTool === 'text'
                 ? 'cursor-text'
@@ -913,14 +1050,16 @@ export default function WordEditor({ file }: WordEditorProps) {
                 : 'cursor-text'
             }`}
             style={{
+              ...wordPageStyle,
               transform: `scale(${(zoom * 1.12) / 100})`,
               transformOrigin: 'top center',
               color: '#333',
               width: `${pageDimensions.width}px`,
               minWidth: 'unset',
-              maxWidth: '100%',
+              maxWidth: pageOrientation === 'landscape' ? 'none' : '100%',
               minHeight: `${pageDimensions.height}px`,
               transition: 'width 250ms ease, min-height 250ms ease, transform 250ms ease',
+              direction: languageSettings.dir,
             }}
             onPointerDown={handleToolPointerDown}
             onKeyDown={applyCurrentTypingColor}
@@ -954,6 +1093,7 @@ export default function WordEditor({ file }: WordEditorProps) {
           total={pagePreviews.length}
           onPrevious={() => handleWordPageChange(safeCurrentPage - 1)}
           onNext={() => handleWordPageChange(safeCurrentPage + 1)}
+          accentColor="#2b579a"
           className="shrink-0 border-t border-gray-200 bg-white"
         />
       </div>
@@ -962,7 +1102,7 @@ export default function WordEditor({ file }: WordEditorProps) {
         title="SCREENS"
         items={pageItems}
         activeId={String(safeCurrentPage)}
-        accentColor="#2563eb"
+        accentColor="#2b579a"
         side="right"
         onAddStep={() => {
           addPage()

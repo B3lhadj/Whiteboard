@@ -1,4 +1,13 @@
 import { create } from 'zustand'
+import {
+  DEFAULT_PAGE_COLUMNS,
+  DEFAULT_PAGE_MARGIN_PRESET,
+  getDefaultPageSizeForFileType,
+  type PageColumnCount,
+  type PageMarginPreset,
+  type PageOrientation,
+  type PageSizePreset,
+} from './pageLayout'
 
 export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | null
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
@@ -35,7 +44,10 @@ export interface DocumentState {
   selectedTheme: ThemeColor
   darkMode: boolean
   zoom: number
-  pageOrientation: 'portrait' | 'landscape'
+  pageOrientation: PageOrientation
+  pageMarginPreset: PageMarginPreset
+  pageSize: PageSizePreset
+  pageColumns: PageColumnCount
   currentPage: number
   wordCount: number
   charCount: number
@@ -49,7 +61,10 @@ export interface DocumentState {
 
   // Actions
   setCurrentFile: (file: DocumentFile) => void
-  setPageOrientation: (orientation: 'portrait' | 'landscape') => void
+  setPageOrientation: (orientation: PageOrientation) => void
+  setPageMarginPreset: (preset: PageMarginPreset) => void
+  setPageSize: (size: PageSizePreset) => void
+  setPageColumns: (columns: PageColumnCount) => void
   addRecentFile: (file: DocumentFile) => void
   removeRecentFile: (id: string) => void
   setSelectedTheme: (theme: ThemeColor) => void
@@ -96,6 +111,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   darkMode: false,
   zoom: 100,
   pageOrientation: 'portrait',
+  pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+  pageSize: 'a4',
+  pageColumns: DEFAULT_PAGE_COLUMNS,
   currentPage: 1,
   wordCount: 0,
   charCount: 0,
@@ -110,7 +128,15 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setCurrentFile: (file) => {
     // Set initial orientation based on file type
     const initialOrientation = file.type === 'pptx' ? 'landscape' : 'portrait'
-    set({ currentFile: file, currentPage: 1, zoom: 100, pageOrientation: initialOrientation })
+    set({
+      currentFile: file,
+      currentPage: 1,
+      zoom: 100,
+      pageOrientation: initialOrientation,
+      pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+      pageSize: getDefaultPageSizeForFileType(file.type),
+      pageColumns: DEFAULT_PAGE_COLUMNS,
+    })
   },
 
   addRecentFile: (file) => {
@@ -146,6 +172,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   setCurrentPage: (page) => set({ currentPage: page }),
   setPageOrientation: (orientation) => set({ pageOrientation: orientation }),
+  setPageMarginPreset: (preset) => set({ pageMarginPreset: preset }),
+  setPageSize: (size) => set({ pageSize: size }),
+  setPageColumns: (columns) => set({ pageColumns: columns }),
 
   setWordCount: (count) => set({ wordCount: count }),
 
@@ -161,18 +190,23 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   setTextFontSize: (size) => set({ textFontSize: size }),
 
-  setSelectedLanguage: (language) => set({ selectedLanguage: language }),
+  setSelectedLanguage: (language) => {
+    set({ selectedLanguage: language })
+    localStorage.setItem('selectedLanguage', language)
+  },
 
   clearCurrentFile: () => {
     set({
       currentFile: null,
       currentPage: 1,
       pageOrientation: 'portrait',
+      pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+      pageSize: 'a4',
+      pageColumns: DEFAULT_PAGE_COLUMNS,
       wordCount: 0,
       charCount: 0,
       editorHtml: '',
       activeTool: 'select',
-      selectedLanguage: 'English',
       zoom: 100,
     })
   },
@@ -188,8 +222,9 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       }
     }
     const theme = localStorage.getItem('selectedTheme') as ThemeColor || 'blue'
+    const selectedLanguage = localStorage.getItem('selectedLanguage') || 'English'
     const darkMode = localStorage.getItem('darkMode') === 'true'
-    set({ selectedTheme: theme, darkMode })
+    set({ selectedTheme: theme, darkMode, selectedLanguage })
   },
 
   saveRecentFilesToStorage: () => {
