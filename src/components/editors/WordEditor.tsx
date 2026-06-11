@@ -2,18 +2,21 @@ import {
   useEffect,
   useState,
   useRef,
+  type CSSProperties,
   type ChangeEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { calculateWordCount, calculateCharCount, getPageDimensions } from '../../utils'
+import { calculateWordCount, calculateCharCount, getEditorLanguageSettings, getPageDimensions } from '../../utils'
+import { getPageMargins } from '../../pageLayout'
 import { AlertCircle } from 'lucide-react'
 import * as mammoth from 'mammoth'
 import { renderAsync } from 'docx-preview'
 import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
 import { getThemeForFileType } from '../../utils'
+import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
 
 interface WordPagePreview {
   id: string
@@ -39,11 +42,15 @@ export default function WordEditor({ file }: WordEditorProps) {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const pageOffsetsRef = useRef<number[]>([])
   const pendingImagePointRef = useRef<{ x: number; y: number } | null>(null)
+  const selectedToolObjectRef = useRef<HTMLElement | null>(null)
   const zoom = useDocumentStore((state) => state.zoom)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const setActiveTool = useDocumentStore((state) => state.setActiveTool)
   const textColor = useDocumentStore((state) => state.textColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
+  const selectedShape = useDocumentStore((state) => state.selectedShape)
+  const selectedLanguage = useDocumentStore((state) => state.selectedLanguage)
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const setWordCount = useDocumentStore((state) => state.setWordCount)
@@ -51,11 +58,15 @@ export default function WordEditor({ file }: WordEditorProps) {
   const setEditorHtml = useDocumentStore((state) => state.setEditorHtml)
   const addPage = useDocumentStore((state) => state.addPage)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
-  const pageDimensions = getPageDimensions(file.type, pageOrientation)
-  
-  // Use originalType for PDFs that were converted to Word
   const actualFileType = file.originalType || file.type
   const themeColor = getThemeForFileType(actualFileType)
+  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const pageSize = useDocumentStore((state) => state.pageSize)
+  const pageColumns = useDocumentStore((state) => state.pageColumns)
+  const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
+  const pageMargins = getPageMargins(pageMarginPreset)
+  const pageColumnGap = pageColumns > 1 ? 32 : 0
+  const languageSettings = getEditorLanguageSettings(selectedLanguage)
 
   /**
    * Replace Unicode ligature characters and special typographic glyphs
@@ -208,6 +219,16 @@ export default function WordEditor({ file }: WordEditorProps) {
 
     loadDocument()
   }, [file.content, setCharCount, setCurrentPage, setEditorHtml, setWordCount])
+
+  useEffect(() => {
+    const container = editorRef.current
+    if (!container) return
+
+    container.setAttribute('lang', languageSettings.lang)
+    container.setAttribute('dir', languageSettings.dir)
+    container.spellcheck = true
+    container.style.direction = languageSettings.dir
+  }, [languageSettings.dir, languageSettings.lang])
 
   const updateCounts = (html: string) => {
     const text = html.replace(/<[^>]*>/g, '')
@@ -614,7 +635,13 @@ export default function WordEditor({ file }: WordEditorProps) {
     }
   }
 
-  const createToolObject = (className: string, x: number, y: number, html = '') => {
+  const createToolObject = (
+    className: string,
+    x: number,
+    y: number,
+    html = '',
+    size?: { width: number; height: number }
+  ) => {
     const container = editorRef.current
     if (!container) return null
 
@@ -622,10 +649,62 @@ export default function WordEditor({ file }: WordEditorProps) {
     element.className = `word-tool-object ${className}`
     element.style.left = `${x}px`
     element.style.top = `${y}px`
+    if (size) {
+      element.style.width = `${size.width}px`
+      element.style.height = `${size.height}px`
+    }
     element.innerHTML = html
     container.appendChild(element)
     syncEditorState()
     return element
+  }
+
+  const selectToolObject = (object: HTMLElement | null) => {
+    selectedToolObjectRef.current?.classList.remove('is-selected')
+    selectedToolObjectRef.current = object
+    object?.classList.add('is-selected')
+  }
+
+  const shapeMarkup = (svg: string) =>
+    `${svg}<span class="word-rotate-handle" contenteditable="false"></span><span class="word-resize-handle" contenteditable="false"></span>`
+
+  const setShapeMarkup = (object: HTMLElement, shape: ShapeKind, color: string, fill: string) => {
+    object.innerHTML = shapeMarkup(
+      getShapeSvg(shape, {
+        width: Math.max(1, object.offsetWidth),
+        height: Math.max(1, object.offsetHeight),
+        stroke: color,
+        fill,
+      })
+    )
+  }
+
+  const beginResizeToolObject = (event: ReactPointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    event.preventDefault()
+    event.stopPropagation()
+    selectToolObject(object)
+
+    const startX = event.clientX
+    const startY = event.clientY
+    const initialWidth = object.offsetWidth
+    const initialHeight = object.offsetHeight
+    const scale = zoom / 100 || 1
+
+    const resize = (moveEvent: PointerEvent) => {
+      const nextWidth = Math.max(36, initialWidth + (moveEvent.clientX - startX) / scale)
+      const nextHeight = Math.max(24, initialHeight + (moveEvent.clientY - startY) / scale)
+      object.style.width = `${nextWidth}px`
+      object.style.height = `${nextHeight}px`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', resize)
+      window.removeEventListener('pointerup', stop)
+      syncEditorState()
+    }
+
+    window.addEventListener('pointermove', resize)
+    window.addEventListener('pointerup', stop)
   }
 
   const applyCurrentTypingColor = () => {
@@ -639,11 +718,109 @@ export default function WordEditor({ file }: WordEditorProps) {
     document.execCommand('fontName', false, textFontFamily)
   }
 
+  const getRangeFromPoint = (x: number, y: number) => {
+    const documentWithCaret = document as Document & {
+      caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null
+      caretPositionFromPoint?: (clientX: number, clientY: number) => { offsetNode: Node; offset: number } | null
+    }
+
+    const range = documentWithCaret.caretRangeFromPoint?.(x, y)
+    if (range) return range
+
+    const position = documentWithCaret.caretPositionFromPoint?.(x, y)
+    if (!position) return null
+
+    const nextRange = document.createRange()
+    nextRange.setStart(position.offsetNode, position.offset)
+    nextRange.collapse(true)
+    return nextRange
+  }
+
+  const getClickedCheckboxGlyph = (text: string, offset: number) => {
+    const checkboxGlyphs = new Set(['□', '☐', '☒', '☑', '▢', '▫', '◻', '▣', '■', '◼'])
+    const candidates = [offset, offset - 1, offset + 1]
+    return candidates.find((index) => checkboxGlyphs.has(text[index])) ?? -1
+  }
+
+  const getChoiceLineRoot = (node: Node) => {
+    const element = node instanceof HTMLElement ? node : node.parentElement
+    if (!element) return null
+
+    const blockTags = new Set(['P', 'LI', 'TD', 'TH', 'TR'])
+    const hasChoiceBoxes = (text: string) => (text.match(/[□☐☒☑▢▫◻▣■◼]/g) || []).length >= 2
+    let current: HTMLElement | null = element
+
+    while (current && current !== editorRef.current) {
+      const text = current.textContent || ''
+      if (blockTags.has(current.tagName)) return current
+      if (text.length <= 260 && hasChoiceBoxes(text)) return current
+      current = current.parentElement
+    }
+
+    return null
+  }
+
+  const collectTextNodes = (root: HTMLElement) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const nodes: Text[] = []
+    let current = walker.nextNode()
+    while (current) {
+      nodes.push(current as Text)
+      current = walker.nextNode()
+    }
+    return nodes
+  }
+
+  const selectChoiceCheckbox = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const container = editorRef.current
+    if (!container) return false
+
+    if (event.target instanceof HTMLInputElement && event.target.type === 'checkbox') {
+      const lineRoot = getChoiceLineRoot(event.target)
+      if (!lineRoot || !container.contains(lineRoot)) return false
+
+      lineRoot.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
+        input.checked = input === event.target
+        if (input.checked) {
+          input.setAttribute('checked', 'checked')
+        } else {
+          input.removeAttribute('checked')
+        }
+      })
+      syncEditorState()
+      return true
+    }
+
+    const range = getRangeFromPoint(event.clientX, event.clientY)
+    const textNode = range?.startContainer
+    if (!(textNode instanceof Text) || !container.contains(textNode)) return false
+
+    const text = textNode.nodeValue || ''
+    if (!range) return false
+    const glyphIndex = getClickedCheckboxGlyph(text, range.startOffset)
+    if (glyphIndex < 0) return false
+
+    const lineRoot = getChoiceLineRoot(textNode)
+    if (!lineRoot || !container.contains(lineRoot)) return false
+
+    for (const node of collectTextNodes(lineRoot)) {
+      node.nodeValue = (node.nodeValue || '').replace(/[☒☑▣■◼]/g, '□')
+    }
+
+    const updatedText = textNode.nodeValue || ''
+    textNode.nodeValue =
+      updatedText.slice(0, glyphIndex) + '☒' + updatedText.slice(glyphIndex + 1)
+
+    syncEditorState()
+    return true
+  }
+
   const beginMoveToolObject = (event: ReactPointerEvent<HTMLDivElement>, object: HTMLElement) => {
     const editableTarget = event.target instanceof HTMLElement
       ? event.target.closest('[contenteditable="true"]')
       : null
     if (editableTarget && object.classList.contains('word-textbox-object')) return
+    selectToolObject(object)
 
     event.preventDefault()
     const startX = event.clientX
@@ -667,16 +844,67 @@ export default function WordEditor({ file }: WordEditorProps) {
     window.addEventListener('pointerup', stop)
   }
 
+  const beginRotateToolObject = (event: ReactPointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    event.preventDefault()
+    event.stopPropagation()
+    selectToolObject(object)
+
+    const rect = object.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    const initialRotation = parseFloat(object.dataset.rotation || '0')
+    const startAngle = Math.atan2(event.clientY - centerY, event.clientX - centerX)
+
+    const rotate = (moveEvent: PointerEvent) => {
+      const currentAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX)
+      const delta = ((currentAngle - startAngle) * 180) / Math.PI
+      const nextRotation = Math.round(initialRotation + delta)
+      object.dataset.rotation = String(nextRotation)
+      object.style.transform = `rotate(${nextRotation}deg)`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', rotate)
+      window.removeEventListener('pointerup', stop)
+      syncEditorState()
+    }
+
+    window.addEventListener('pointermove', rotate)
+    window.addEventListener('pointerup', stop)
+  }
+
   const handleToolPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (isLoading || error) return
 
     const target = event.target as HTMLElement
     const selectedObject = target.closest('.word-tool-object') as HTMLElement | null
+    const rotateObject = target.closest('.word-rotate-handle')?.closest('.word-tool-object') as HTMLElement | null
+    const resizeObject = target.closest('.word-resize-handle')?.closest('.word-tool-object') as HTMLElement | null
+
+    if (rotateObject) {
+      beginRotateToolObject(event, rotateObject)
+      return
+    }
+
+    if (resizeObject) {
+      beginResizeToolObject(event, resizeObject)
+      return
+    }
+
+    if (!selectedObject && selectChoiceCheckbox(event)) {
+      event.preventDefault()
+      return
+    }
 
     if (activeTool === 'select') {
       if (selectedObject) {
         beginMoveToolObject(event, selectedObject)
       }
+      return
+    }
+
+    if (selectedObject && activeTool !== 'erase') {
+      beginMoveToolObject(event, selectedObject)
       return
     }
 
@@ -698,7 +926,24 @@ export default function WordEditor({ file }: WordEditorProps) {
     if (activeTool === 'shape') {
       event.preventDefault()
       const point = getEditorPoint(event)
-      createToolObject('word-shape-object', point.x, point.y)
+      const shapeSize = getShapeSize(selectedShape)
+      const shapeObject = createToolObject(
+        'word-shape-object',
+        point.x,
+        point.y,
+        shapeMarkup(getShapeSvg(selectedShape, {
+          width: shapeSize.width,
+          height: shapeSize.height,
+          stroke: textColor,
+          fill: 'rgba(37, 99, 235, 0.08)',
+        })),
+        shapeSize
+      )
+      if (shapeObject) {
+        shapeObject.dataset.shapeKind = selectedShape
+        selectToolObject(shapeObject)
+      }
+      setActiveTool('select')
       return
     }
 
@@ -709,7 +954,7 @@ export default function WordEditor({ file }: WordEditorProps) {
         'word-textbox-object',
         point.x,
         point.y,
-        `<div contenteditable="true" spellcheck="false" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px;">Text box</div>`
+        `<div contenteditable="true" spellcheck="true" lang="${languageSettings.lang}" dir="${languageSettings.dir}" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px; direction: ${languageSettings.dir};">Text box</div>`
       )
       const editable = textBox?.querySelector('[contenteditable="true"]') as HTMLElement | null
       editable?.focus()
@@ -789,6 +1034,21 @@ export default function WordEditor({ file }: WordEditorProps) {
     reader.readAsDataURL(file)
   }
 
+  useEffect(() => {
+    const handleShapeColorChange = (event: Event) => {
+      const color = (event as CustomEvent<{ color?: string }>).detail?.color
+      const object = selectedToolObjectRef.current
+      if (!color || !object || !document.contains(object) || !object.classList.contains('word-shape-object')) return
+
+      const shape = (object.dataset.shapeKind || 'rectangle') as ShapeKind
+      setShapeMarkup(object, shape, color, 'rgba(37, 99, 235, 0.08)')
+      syncEditorState()
+    }
+
+    window.addEventListener('editor-shape-color-change', handleShapeColorChange)
+    return () => window.removeEventListener('editor-shape-color-change', handleShapeColorChange)
+  }, [])
+
   const pageCount = Math.max(1, pagePreviews.length)
   const safeCurrentPage = Math.min(Math.max(1, currentPage), pageCount)
 
@@ -802,6 +1062,16 @@ export default function WordEditor({ file }: WordEditorProps) {
 
   const previewScale = pageOrientation === 'landscape' ? 0.14 : 0.19
   const pageWidth = pageDimensions.width
+  const wordPageStyle = {
+    '--word-page-width': `${pageDimensions.width}px`,
+    '--word-page-height': `${pageDimensions.height}px`,
+    '--word-page-margin-top': `${pageMargins.top}px`,
+    '--word-page-margin-right': `${pageMargins.right}px`,
+    '--word-page-margin-bottom': `${pageMargins.bottom}px`,
+    '--word-page-margin-left': `${pageMargins.left}px`,
+    '--word-page-column-count': pageColumns,
+    '--word-page-column-gap': `${pageColumnGap}px`,
+  } as CSSProperties
 
   const pageItems: PageRailItem[] = pagePreviews.map((page, index) => ({
     id: String(index + 1),
@@ -813,7 +1083,12 @@ export default function WordEditor({ file }: WordEditorProps) {
       <div className="word-preview-thumb flex h-full w-full items-start justify-center overflow-hidden bg-white">
         <div
           className="origin-top text-[8px]"
-          style={{ width: `${pageWidth}px`, transform: `scale(${previewScale})`, transformOrigin: 'top center' }}
+          style={{
+            ...wordPageStyle,
+            width: `${pageWidth}px`,
+            transform: `scale(${previewScale})`,
+            transformOrigin: 'top center',
+          }}
           dangerouslySetInnerHTML={{ __html: page.html }}
         />
       </div>
@@ -907,24 +1182,29 @@ export default function WordEditor({ file }: WordEditorProps) {
             data-print-document="true"
             ref={editorRef}
             contentEditable
-            spellCheck={false}
-            className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${activeTool === 'text'
-              ? 'cursor-text'
-              : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
+            spellCheck
+            lang={languageSettings.lang}
+            dir={languageSettings.dir}
+            className={`word-editor-root relative min-h-[calc(100vh-172px)] bg-white p-0 sm:p-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+              activeTool === 'text'
+                ? 'cursor-text'
+                : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
                 ? 'cursor-crosshair'
                 : activeTool === 'erase'
                   ? 'cursor-not-allowed'
                   : 'cursor-text'
               }`}
             style={{
+              ...wordPageStyle,
               transform: `scale(${(zoom * 1.12) / 100})`,
               transformOrigin: 'top center',
               color: '#333',
               width: `${pageDimensions.width}px`,
               minWidth: 'unset',
-              maxWidth: '100%',
+              maxWidth: pageOrientation === 'landscape' ? 'none' : '100%',
               minHeight: `${pageDimensions.height}px`,
               transition: 'width 250ms ease, min-height 250ms ease, transform 250ms ease',
+              direction: languageSettings.dir,
             }}
             onPointerDown={handleToolPointerDown}
             onKeyDown={applyCurrentTypingColor}
@@ -958,6 +1238,7 @@ export default function WordEditor({ file }: WordEditorProps) {
           total={pagePreviews.length}
           onPrevious={() => handleWordPageChange(safeCurrentPage - 1)}
           onNext={() => handleWordPageChange(safeCurrentPage + 1)}
+          accentColor="#2b579a"
           className="shrink-0 border-t border-gray-200 bg-white"
           themeColor={themeColor}
         />
@@ -967,7 +1248,7 @@ export default function WordEditor({ file }: WordEditorProps) {
         title="SCREENS"
         items={pageItems}
         activeId={String(safeCurrentPage)}
-        accentColor={getThemeForFileType(file.originalType || file.type)}
+        accentColor={themeColor}
         side="right"
         onAddStep={() => {
           addPage()

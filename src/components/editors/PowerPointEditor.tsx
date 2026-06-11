@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
 import { getPageDimensions } from '../../utils'
+import { getPageMargins } from '../../pageLayout'
 import JSZip from 'jszip'
 import { Move, Plus, Type, Trash2 } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
@@ -102,7 +103,17 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
-  const pageDimensions = getPageDimensions(file.type, pageOrientation)
+  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const pageSize = useDocumentStore((state) => state.pageSize)
+  const pageColumns = useDocumentStore((state) => state.pageColumns)
+  const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
+  const pageMargins = getPageMargins(pageMarginPreset)
+  const slideContentBox = {
+    top: Math.min(pageMargins.top, pageDimensions.height * 0.28),
+    right: Math.min(pageMargins.right, pageDimensions.width * 0.28),
+    bottom: Math.min(pageMargins.bottom, pageDimensions.height * 0.28),
+    left: Math.min(pageMargins.left, pageDimensions.width * 0.28),
+  }
 
   const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
 
@@ -727,6 +738,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
     label: `Slide ${index + 1}`,
     subtitle: slide.title,
     fileType: 'powerpoint',
+    pageType: pageOrientation,
     thumbnail: slide.thumbnailData ?? null,
     onClick: () => handleSlideChange(index + 1),
     onDelete: !file.viewOnly ? () => handleDeleteSlide(slide.id) : undefined,
@@ -1274,7 +1286,14 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                 ))}
 
                 <div className="absolute inset-0 z-10">
-                  <div className="absolute inset-0 px-12 py-10 overflow-hidden">
+                  <div
+                    className="absolute inset-0 overflow-hidden"
+                    style={{
+                      padding: `${slideContentBox.top}px ${slideContentBox.right}px ${slideContentBox.bottom}px ${slideContentBox.left}px`,
+                      columnCount: pageColumns,
+                      columnGap: pageColumns > 1 ? '32px' : '0px',
+                    }}
+                  >
                     {activeSlide.textElements.map((textElement, index) => (
                       <div
                         key={index}
@@ -1381,6 +1400,25 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
               </>
             )}
 
+            {(pageMarginPreset !== 'normal' || pageColumns > 1) && (
+              <div
+                className="pointer-events-none absolute border border-dashed border-red-300/70"
+                style={{
+                  left: `${slideContentBox.left}px`,
+                  right: `${slideContentBox.right}px`,
+                  top: `${slideContentBox.top}px`,
+                  bottom: `${slideContentBox.bottom}px`,
+                }}
+              >
+                {pageColumns > 1 && Array.from({ length: pageColumns - 1 }, (_, index) => (
+                  <span
+                    key={index}
+                    className="absolute top-0 h-full border-l border-dashed border-red-300/70"
+                    style={{ left: `${((index + 1) / pageColumns) * 100}%` }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-center text-gray-600">No slides available</div>
@@ -1393,6 +1431,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             total={slides.length}
             onPrevious={() => handleSlideChange(Math.max(1, currentPage - 1))}
             onNext={() => handleSlideChange(Math.min(slides.length, currentPage + 1))}
+            accentColor="#c2410c"
             className="sticky bottom-0 z-20 mt-4 border-t border-gray-200 bg-white/95 backdrop-blur"
             themeColor=""
           />

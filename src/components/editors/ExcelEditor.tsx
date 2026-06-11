@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type UIEvent } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
 import * as XLSX from 'xlsx'
-import { AlertCircle, Plus } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, MoreVertical, Plus, X } from 'lucide-react'
 import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
 import { getThemeForFileType } from '../../utils' // Add this import
@@ -9,6 +9,8 @@ import { getThemeForFileType } from '../../utils' // Add this import
 interface ExcelEditorProps {
   file: DocumentFile
 }
+
+type LetterCaseMode = 'upper' | 'lower'
 
 type CellValue = string | number | boolean | null
 type SheetData = CellValue[][]
@@ -23,6 +25,9 @@ type CellFormat = {
 
 const MIN_ROWS = 40
 const MIN_COLS = 18
+const DEFAULT_COLUMN_WIDTH = 104
+const MIN_COLUMN_WIDTH = 34
+const MAX_COLUMN_WIDTH = 520
 
 const normalizeSheetData = (rows: SheetData): SheetData => {
   const sourceRows = rows.length > 0 ? rows : [[]]
@@ -38,6 +43,11 @@ const normalizeSheetData = (rows: SheetData): SheetData => {
 
 const getCellText = (value: CellValue) => (value === null || value === undefined ? '' : String(value))
 
+const getTextFitWidth = (text: string) => {
+  if (!text) return DEFAULT_COLUMN_WIDTH
+  return Math.min(MAX_COLUMN_WIDTH, Math.max(DEFAULT_COLUMN_WIDTH, text.length * 8 + 28))
+}
+
 export default function ExcelEditor({ file }: ExcelEditorProps) {
   const [sheets, setSheets] = useState<string[]>([])
   const [sheetsData, setSheetsData] = useState<Record<string, SheetData>>({})
@@ -45,6 +55,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
   const [selectedCell, setSelectedCell] = useState({ row: 0, col: 0 })
   const [formulaValue, setFormulaValue] = useState('')
   const [cellFormats, setCellFormats] = useState<Record<string, Record<string, CellFormat>>>({})
+  const [columnWidths, setColumnWidths] = useState<Record<string, Record<number, number>>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const workbookRef = useRef<XLSX.WorkBook | null>(null)
@@ -75,7 +86,9 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
 
   const getCellKey = (rowIndex: number, colIndex: number) => `${rowIndex}:${colIndex}`
   const selectedCellKey = getCellKey(selectedCell.row, selectedCell.col)
-  
+  const getColumnWidth = (colIndex: number) =>
+    activeSheetName ? columnWidths[activeSheetName]?.[colIndex] || DEFAULT_COLUMN_WIDTH : DEFAULT_COLUMN_WIDTH
+
   useEffect(() => {
     const loadExcel = async () => {
       try {
@@ -149,6 +162,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
 
   const updateCellValue = (rowIndex: number, colIndex: number, value: string) => {
     if (!activeSheetName) return
+    expandColumnForText(colIndex, value)
 
     setSheetsData((previous) => {
       const currentRows = normalizeSheetData(previous[activeSheetName] || [])
@@ -176,6 +190,146 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
   const handleFormulaChange = (value: string) => {
     setFormulaValue(value)
     updateCellValue(selectedCell.row, selectedCell.col, value)
+  }
+
+  const clearSelectedCell = () => {
+    setFormulaValue('')
+    updateCellValue(selectedCell.row, selectedCell.col, '')
+  }
+
+  const commitFormulaValue = () => {
+    updateCellValue(selectedCell.row, selectedCell.col, formulaValue)
+  }
+
+  const insertRowAt = (rowIndex: number) => {
+    if (!activeSheetName) return
+
+    setSheetsData((previous) => {
+      const rows = normalizeSheetData(previous[activeSheetName] || [])
+      const columnLength = Math.max(columnCount, MIN_COLS)
+      const insertIndex = Math.max(0, Math.min(rowIndex, rows.length))
+      const nextRows = [
+        ...rows.slice(0, insertIndex),
+        Array.from({ length: columnLength }, () => ''),
+        ...rows.slice(insertIndex),
+      ]
+      updateCounts(nextRows)
+      return {
+        ...previous,
+        [activeSheetName]: nextRows,
+      }
+    })
+
+    setSelectedCell((cell) => ({ row: Math.max(0, Math.min(rowIndex, activeData.length)), col: cell.col }))
+    setFormulaValue('')
+  }
+
+  const insertColumnAt = (colIndex: number) => {
+    if (!activeSheetName) return
+    const insertIndex = Math.max(0, Math.min(colIndex, columnCount))
+
+    setSheetsData((previous) => {
+      const rows = normalizeSheetData(previous[activeSheetName] || [])
+      const nextRows = rows.map((row) => [
+        ...row.slice(0, insertIndex),
+        '',
+        ...row.slice(insertIndex),
+      ])
+      updateCounts(nextRows)
+      return {
+        ...previous,
+        [activeSheetName]: nextRows,
+      }
+    })
+
+    setColumnWidths((previous) => {
+      const currentWidths = previous[activeSheetName] || {}
+      const nextWidths: Record<number, number> = {}
+      Object.entries(currentWidths).forEach(([key, width]) => {
+        const index = Number(key)
+        nextWidths[index >= insertIndex ? index + 1 : index] = width
+      })
+      nextWidths[insertIndex] = DEFAULT_COLUMN_WIDTH
+      return {
+        ...previous,
+        [activeSheetName]: nextWidths,
+      }
+    })
+
+    setSelectedCell((cell) => ({ row: cell.row, col: insertIndex }))
+    setFormulaValue('')
+  }
+
+  const insertRowAbove = () => insertRowAt(selectedCell.row)
+  const insertRowBelow = () => insertRowAt(selectedCell.row + 1)
+  const insertColumnBefore = () => insertColumnAt(selectedCell.col)
+  const insertColumnAfter = () => insertColumnAt(selectedCell.col + 1)
+
+  useEffect(() => {
+    const transformText = (text: string, mode: LetterCaseMode) =>
+      mode === 'upper' ? text.toLocaleUpperCase() : text.toLocaleLowerCase()
+
+    const handleChangeCase = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: LetterCaseMode }>).detail?.mode
+      if (!mode) return
+
+      const currentValue = getCellText(activeData[selectedCell.row]?.[selectedCell.col] ?? '')
+      const nextValue = transformText(currentValue, mode)
+      setFormulaValue(nextValue)
+      updateCellValue(selectedCell.row, selectedCell.col, nextValue)
+    }
+
+    window.addEventListener('editor-change-case', handleChangeCase)
+    return () => window.removeEventListener('editor-change-case', handleChangeCase)
+  }, [activeData, selectedCell.row, selectedCell.col])
+
+  const setColumnWidth = (colIndex: number, width: number) => {
+    if (!activeSheetName) return
+
+    setColumnWidths((previous) => ({
+      ...previous,
+      [activeSheetName]: {
+        ...(previous[activeSheetName] || {}),
+        [colIndex]: Math.min(MAX_COLUMN_WIDTH, Math.max(MIN_COLUMN_WIDTH, Math.round(width))),
+      },
+    }))
+  }
+
+  const expandColumnForText = (colIndex: number, value: string) => {
+    const nextWidth = getTextFitWidth(value)
+    if (nextWidth > getColumnWidth(colIndex)) {
+      setColumnWidth(colIndex, nextWidth)
+    }
+  }
+
+  const handleColumnResizeStart = (event: ReactPointerEvent<HTMLSpanElement>, colIndex: number) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    const startX = event.clientX
+    const startWidth = getColumnWidth(colIndex)
+
+    const resize = (moveEvent: PointerEvent) => {
+      setColumnWidth(colIndex, startWidth + moveEvent.clientX - startX)
+    }
+
+    const stopResize = () => {
+      window.removeEventListener('pointermove', resize)
+      window.removeEventListener('pointerup', stopResize)
+    }
+
+    window.addEventListener('pointermove', resize)
+    window.addEventListener('pointerup', stopResize)
+  }
+
+  const autofitColumn = (colIndex: number) => {
+    const headerWidth = columns[colIndex]?.length ? columns[colIndex].length * 12 + 36 : DEFAULT_COLUMN_WIDTH
+    const contentWidth = activeData.reduce((maxWidth, row) => {
+      const text = getCellText(row[colIndex] ?? '')
+      return Math.max(maxWidth, text.length * 8 + 28)
+    }, headerWidth)
+
+    setColumnWidth(colIndex, contentWidth)
   }
 
   const updateSelectedCellFormat = (patch: CellFormat) => {
@@ -243,7 +397,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
       resizeObserver?.disconnect()
       window.removeEventListener('resize', updateTopScrollbarWidth)
     }
-  }, [activeSheetName, activeData.length, columnCount, zoom])
+  }, [activeSheetName, activeData.length, columnCount, zoom, columnWidths])
 
   const syncScrollLeft = (source: HTMLDivElement, target: HTMLDivElement | null) => {
     if (!target || syncingScrollRef.current) return
@@ -384,6 +538,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
             onNext={() => selectSheet(Math.min(sheets.length - 1, selectedSheet + 1))}
             previousLabel="Back"
             nextLabel="Next"
+            accentColor="#217346"
             className="sticky top-0 z-30 border-b border-gray-200 bg-gray-100/95 backdrop-blur"
             themeColor={themeColor} // Add this line
           />
@@ -406,17 +561,82 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
             </div>
           )}
 
-          <div className="rounded-lg border border-gray-200 bg-white p-2 sm:p-3 shadow-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="w-20 rounded border border-gray-300 bg-gray-50 px-3 py-2 text-center text-sm font-semibold text-gray-700">
-                {XLSX.utils.encode_cell({ r: selectedCell.row, c: selectedCell.col })}
-              </span>
-              <input
-                type="text"
+          <div className="rounded-lg border border-[#4a4a4a] bg-[#1f1f1f] px-2 py-2 shadow-sm">
+            <div className="flex min-w-0 items-center gap-2 text-white">
+              <button
+                className="flex h-8 w-32 shrink-0 items-center justify-between rounded border border-[#6a6a6a] bg-[#242424] px-2 text-left text-sm text-white shadow-inner hover:bg-[#2d2d2d]"
+                title="Selected cell"
+              >
+                <span>
+                  {XLSX.utils.encode_cell({ r: selectedCell.row, c: selectedCell.col })}
+                </span>
+                <ChevronDown size={16} className="text-gray-300" />
+              </button>
+
+              <MoreVertical size={18} className="shrink-0 text-gray-400" />
+
+              <div className="flex h-8 shrink-0 items-center overflow-hidden rounded border border-[#6a6a6a] bg-[#242424]">
+                <button
+                  onClick={clearSelectedCell}
+                  className="flex h-full w-9 items-center justify-center text-red-400 hover:bg-white/10"
+                  title="Clear selected cell"
+                >
+                  <X size={18} />
+                </button>
+                <button
+                  onClick={commitFormulaValue}
+                  className="flex h-full w-9 items-center justify-center text-green-400 hover:bg-white/10"
+                  title="Apply value"
+                >
+                  <Check size={18} />
+                </button>
+                <span className="flex h-full items-center border-l border-[#6a6a6a] px-3 font-serif text-lg italic text-gray-200">
+                  fx
+                </span>
+              </div>
+
+              <textarea
                 value={formulaValue}
                 onChange={(e) => handleFormulaChange(e.target.value)}
-                className="min-w-0 flex-1 rounded border border-gray-300 px-3 py-2 text-sm focus:border-transparent focus:outline-none focus:ring-2 focus:ring-green-500"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.stopPropagation()
+                  }
+                }}
+                rows={1}
+                className="min-h-8 max-h-24 min-w-0 flex-1 resize-y rounded border border-[#6a6a6a] bg-[#242424] px-3 py-1.5 text-sm leading-5 text-white outline-none focus:border-green-500 focus:ring-1 focus:ring-green-500"
               />
+
+              <div className="ml-auto flex shrink-0 items-center gap-1">
+                <button
+                  onClick={insertRowAbove}
+                  className="h-8 rounded border border-[#6a6a6a] bg-[#242424] px-2 text-xs font-semibold text-white hover:bg-[#2d2d2d]"
+                  title="Insert row above selected row"
+                >
+                  Row +
+                </button>
+                <button
+                  onClick={insertRowBelow}
+                  className="h-8 rounded border border-[#6a6a6a] bg-[#242424] px-2 text-xs font-semibold text-white hover:bg-[#2d2d2d]"
+                  title="Insert row below selected row"
+                >
+                  + Row
+                </button>
+                <button
+                  onClick={insertColumnBefore}
+                  className="h-8 rounded border border-[#6a6a6a] bg-[#242424] px-2 text-xs font-semibold text-white hover:bg-[#2d2d2d]"
+                  title="Insert column before selected column"
+                >
+                  Col +
+                </button>
+                <button
+                  onClick={insertColumnAfter}
+                  className="h-8 rounded border border-[#6a6a6a] bg-[#242424] px-2 text-xs font-semibold text-white hover:bg-[#2d2d2d]"
+                  title="Insert column after selected column"
+                >
+                  + Col
+                </button>
+              </div>
             </div>
           </div>
 
@@ -443,18 +663,38 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                 }}
                 className="inline-block min-w-full"
               >
-                <table className="border-collapse">
+                <table className="table-fixed border-collapse">
+                  <colgroup>
+                    <col style={{ width: 48 }} />
+                    {columns.map((col, colIndex) => (
+                      <col key={col} style={{ width: getColumnWidth(colIndex) }} />
+                    ))}
+                  </colgroup>
                   <thead>
-                    <tr className="border-b-2 border-green-300 bg-green-50">
-                      <th className="sticky left-0 top-0 z-30 w-12 border-r border-gray-300 bg-green-100 px-3 py-2 text-center text-sm font-bold text-gray-700">
+                    <tr className="border-b border-gray-300 bg-white">
+                      <th className="sticky left-0 top-0 z-30 w-12 border-r border-gray-300 bg-white px-3 py-1 text-center text-sm font-bold text-gray-900">
                         #
                       </th>
-                      {columns.map((col) => (
+                      {columns.map((col, colIndex) => (
                         <th
                           key={col}
-                          className="sticky top-0 z-20 min-w-32 border-r border-gray-300 bg-green-50 px-3 py-2 text-center text-sm font-bold text-gray-700"
+                          onClick={() => handleCellFocus(selectedCell.row, colIndex)}
+                          className={`sticky top-0 z-20 select-none border-r border-gray-300 px-3 py-1 text-center text-sm font-medium text-gray-900 ${
+                            selectedCell.col === colIndex ? 'bg-gray-100' : 'bg-white'
+                          }`}
+                          style={{ width: getColumnWidth(colIndex) }}
                         >
-                          {col}
+                          <span>{col}</span>
+                          <span
+                            className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none hover:bg-green-500/70"
+                            onPointerDown={(event) => handleColumnResizeStart(event, colIndex)}
+                            onDoubleClick={(event) => {
+                              event.preventDefault()
+                              event.stopPropagation()
+                              autofitColumn(colIndex)
+                            }}
+                            title="Drag to resize column. Double-click to autofit."
+                          />
                         </th>
                       ))}
                     </tr>
@@ -462,7 +702,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                   <tbody>
                     {activeData.map((row, rowIndex) => (
                       <tr key={rowIndex} className="border-b border-gray-200">
-                        <td className="sticky left-0 z-10 border-r border-gray-300 bg-gray-100 px-3 py-2 text-center text-sm font-semibold text-gray-700">
+                        <td className="sticky left-0 z-10 border-r border-gray-300 bg-white px-3 py-1 text-center text-sm font-medium text-gray-900">
                           {rowIndex + 1}
                         </td>
                         {columns.map((_, colIndex) => {
@@ -472,22 +712,32 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                             : undefined
 
                           return (
-                            <td key={`${rowIndex}-${colIndex}`} className="border-r border-gray-300 p-0 text-sm">
-                              <input
-                                type="text"
+                            <td
+                              key={`${rowIndex}-${colIndex}`}
+                              className="border-r border-gray-300 p-0 text-sm"
+                              style={{ width: getColumnWidth(colIndex) }}
+                            >
+                              <textarea
                                 value={getCellText(row[colIndex] ?? '')}
                                 onFocus={() => handleCellFocus(rowIndex, colIndex)}
                                 onChange={(e) => {
                                   setFormulaValue(e.target.value)
                                   updateCellValue(rowIndex, colIndex, e.target.value)
                                 }}
-                                className={`h-9 w-full border-0 px-2 text-sm focus:outline-none ${
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.stopPropagation()
+                                  }
+                                }}
+                                rows={Math.max(1, getCellText(row[colIndex] ?? '').split(/\r?\n/).length)}
+                                className={`min-h-9 w-full resize-none whitespace-pre-wrap border-0 px-2 py-2 text-sm leading-5 focus:outline-none ${
                                   isSelected
                                     ? 'bg-yellow-50 ring-2 ring-inset ring-green-500'
                                     : 'bg-white hover:bg-green-50'
                                 }`}
                                 style={{
-                                  minWidth: '9rem',
+                                  width: `${getColumnWidth(colIndex)}px`,
+                                  minWidth: `${getColumnWidth(colIndex)}px`,
                                   color: cellFormat?.color || '#111827',
                                   backgroundColor:
                                     isSelected

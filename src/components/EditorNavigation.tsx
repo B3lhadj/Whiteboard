@@ -7,6 +7,7 @@ interface EditorNavigationProps {
   onNext: () => void
   previousLabel?: string
   nextLabel?: string
+  accentColor?: string
   className?: string
   themeColor?: string
 }
@@ -18,32 +19,21 @@ export default function EditorNavigation({
   onNext,
   previousLabel = 'Previous',
   nextLabel = 'Next',
+  accentColor = '#dc2626',
   className = '',
   themeColor = '#dc2626',
 }: EditorNavigationProps) {
   const safeTotal = Math.max(1, total)
   const safeCurrent = Math.min(Math.max(1, current), safeTotal)
+  const navigationColor = themeColor || accentColor
 
   return (
     <div data-print-hidden="true" className={`flex items-center justify-center gap-4 py-3 ${className}`}>
       <button
         onClick={onPrevious}
         disabled={safeCurrent <= 1}
-        className="flex h-12 min-w-[140px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
-        style={{ 
-          backgroundColor: themeColor,
-          transition: 'background-color 0.2s ease',
-        }}
-        onMouseEnter={(e) => {
-          if (safeCurrent > 1) {
-            e.currentTarget.style.backgroundColor = '#b91c1c'
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (safeCurrent > 1) {
-            e.currentTarget.style.backgroundColor = themeColor
-          }
-        }}
+        className="flex h-12 min-w-[140px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:brightness-90 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        style={{ backgroundColor: navigationColor }}
         title={previousLabel}
       >
         <ChevronLeft size={22} />
@@ -55,21 +45,8 @@ export default function EditorNavigation({
       <button
         onClick={onNext}
         disabled={safeCurrent >= safeTotal}
-        className="flex h-12 min-w-[112px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
-        style={{ 
-          backgroundColor: themeColor,
-          transition: 'background-color 0.2s ease',
-        }}
-        onMouseEnter={(e) => {
-          if (safeCurrent < safeTotal) {
-            e.currentTarget.style.backgroundColor = '#b91c1c'
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (safeCurrent < safeTotal) {
-            e.currentTarget.style.backgroundColor = themeColor
-          }
-        }}
+        className="flex h-12 min-w-[112px] items-center justify-center gap-2 rounded-lg px-6 text-base font-bold text-white shadow-lg transition-all hover:brightness-90 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-45"
+        style={{ backgroundColor: navigationColor }}
         title={nextLabel}
       >
         {nextLabel}

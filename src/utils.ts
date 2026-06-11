@@ -1,4 +1,5 @@
-import { FileType } from './store'
+import type { FileType } from './store'
+import { getDefaultPageSizeForFileType, getPageSize, type PageOrientation, type PageSizePreset } from './pageLayout'
 
 export function getFileType(file: File): FileType {
   const name = file.name.toLowerCase()
@@ -39,6 +40,44 @@ export function getThemeNameForFileType(fileType: FileType): string {
   return names[fileType || 'default'] || 'Default'
 }
 
+export function getEditorLanguageSettings(language: string) {
+  const normalizedLanguage = normalizeEditorLanguage(language)
+  const settings: Record<string, { lang: string; dir: 'ltr' | 'rtl' }> = {
+    English: { lang: 'en', dir: 'ltr' },
+    Arabic: { lang: 'ar', dir: 'rtl' },
+    French: { lang: 'fr', dir: 'ltr' },
+    Spanish: { lang: 'es', dir: 'ltr' },
+  }
+
+  return settings[normalizedLanguage] || settings.English
+}
+
+export function normalizeEditorLanguage(language: string) {
+  const normalized = language.trim().toLowerCase()
+  const aliases: Record<string, string> = {
+    english: 'English',
+    anglais: 'English',
+    ingles: 'English',
+    الانجليزية: 'English',
+    arabic: 'Arabic',
+    arabe: 'Arabic',
+    ar: 'Arabic',
+    العربية: 'Arabic',
+    french: 'French',
+    francais: 'French',
+    français: 'French',
+    frances: 'French',
+    الفرنسية: 'French',
+    spanish: 'Spanish',
+    espagnol: 'Spanish',
+    espanol: 'Spanish',
+    español: 'Spanish',
+    الاسبانية: 'Spanish',
+  }
+
+  return aliases[normalized] || 'English'
+}
+
 export function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B'
   const k = 1024
@@ -58,36 +97,37 @@ export function calculateCharCount(text: string): number {
   return text.length
 }
 export interface PageDimensions {
-  layout: 'portrait' | 'landscape'
+  layout: PageOrientation
   width: number
   height: number
   aspectRatio: string
 }
 
-export function getPageDimensions(fileType?: FileType, orientation?: 'portrait' | 'landscape'): PageDimensions {
-  // Determine base layout based on file type
-  const baseLayout = fileType === 'pptx' ? 'landscape' : 'portrait'
+export function getPageDimensions(
+  fileType?: FileType,
+  orientation?: PageOrientation,
+  pageSize?: PageSizePreset
+): PageDimensions {
+  const size = getPageSize(pageSize || getDefaultPageSizeForFileType(fileType))
 
-  // Use provided orientation or fall back to base layout
+  // Determine base layout based on file type.
+  const baseLayout: PageOrientation = fileType === 'pptx' ? 'landscape' : 'portrait'
   const currentLayout = orientation || baseLayout
+  const shouldSwap =
+    (currentLayout === 'portrait' && size.width > size.height) ||
+    (currentLayout === 'landscape' && size.width < size.height)
+  const baseWidth = shouldSwap ? size.height : size.width
+  const height = shouldSwap ? size.width : size.height
+  const width =
+    currentLayout === 'landscape' && fileType !== 'pptx' && pageSize !== 'screen16x9'
+      ? Math.round(baseWidth * 1.24)
+      : baseWidth
 
-  switch (currentLayout) {
-    case 'landscape':
-      return {
-        layout: 'landscape',
-        width: 1120, // ~16:9 aspect ratio width
-        height: 630, // ~16:9 aspect ratio height
-        aspectRatio: '16 / 9',
-      }
-
-    case 'portrait':
-    default:
-      return {
-        layout: 'portrait',
-        width: 794, // A4 width equivalent
-        height: 1123, // A4 height equivalent
-        aspectRatio: '210 / 297', // A4 aspect ratio
-      }
+  return {
+    layout: currentLayout,
+    width,
+    height,
+    aspectRatio: `${width} / ${height}`,
   }
 }
 export function generateFileId(): string {

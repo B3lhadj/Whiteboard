@@ -24,6 +24,57 @@ interface PdfAnnotation {
   color: string
 }
 
+type PdfListCommandDetail = {
+  kind: 'bullet' | 'number' | 'multilevel'
+  style?: string
+}
+
+const PDF_BULLET_MARKERS: Record<string, string> = {
+  disc: '\u2022',
+  circle: 'o',
+  square: '-',
+  arrow: '>',
+  check: 'v',
+  diamond: '-',
+  plus: '+',
+}
+
+const ROMAN_NUMERALS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
+const LIST_PREFIX_PATTERN = /^\s*(?:(?:[\u2022o>\-+v]\s+)|(?:\d+[.)]\s+)|(?:[A-Z][.)]\s+)|(?:[IVXLCDM]+[.)]\s+))/i
+
+const stripListPrefix = (line: string) => line.replace(LIST_PREFIX_PATTERN, '')
+
+const getPdfListPrefix = (detail: PdfListCommandDetail, index: number) => {
+  if (detail.kind === 'bullet') {
+    return `${PDF_BULLET_MARKERS[detail.style || 'disc'] || PDF_BULLET_MARKERS.disc} `
+  }
+
+  if (detail.kind === 'multilevel' && detail.style === 'heading') {
+    return `${String.fromCharCode(65 + (index % 26))}. `
+  }
+
+  if (detail.kind === 'multilevel' && detail.style === 'legal') {
+    return `${ROMAN_NUMERALS[index] || index + 1}. `
+  }
+
+  return `${index + 1}. `
+}
+
+const applyListToPlainText = (text: string, detail: PdfListCommandDetail) => {
+  const lines = text.split(/\r?\n/)
+
+  if (detail.kind === 'bullet' && detail.style === 'none') {
+    return lines.map(stripListPrefix).join('\n')
+  }
+
+  return lines
+    .map((line, index) => {
+      if (!line.trim()) return line
+      return `${getPdfListPrefix(detail, index)}${stripListPrefix(line)}`
+    })
+    .join('\n')
+}
+
 // Use local bundled worker to avoid CDN/network failures.
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.js',
@@ -40,8 +91,13 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const [isAddTextMode, setIsAddTextMode] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
   const [isExporting, setIsExporting] = useState(false)
+  const [viewerWidth, setViewerWidth] = useState(900)
+  const [pageContentSize, setPageContentSize] = useState({ width: 0, height: 0 })
+  const [pageCanvasSize, setPageCanvasSize] = useState({ width: 0, height: 0 })
+  const viewerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
+  const renderTaskRef = useRef<any>(null)
   const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
   const themeColor = getThemeForFileType(file.type)
 
@@ -65,6 +121,27 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     () => annotations.filter((a) => a.page === currentPage),
     [annotations, currentPage]
   )
+  const rightPageGutter = Math.round(Math.min(120, Math.max(64, viewerWidth * 0.07)))
+  const availablePageWidth = Math.max(320, viewerWidth - rightPageGutter - 56)
+
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer) return
+
+    const updateViewerWidth = () => {
+      setViewerWidth(Math.max(320, viewer.clientWidth))
+    }
+
+    updateViewerWidth()
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateViewerWidth) : null
+    observer?.observe(viewer)
+    window.addEventListener('resize', updateViewerWidth)
+
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', updateViewerWidth)
+    }
+  }, [error, isLoading])
 
   useEffect(() => {
     const loadPDF = async () => {
@@ -160,6 +237,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   }, [pdfDoc, pageOrder, pageOrientation])
 
   useEffect(() => {
+    let isDisposed = false
+
     const renderPage = async () => {
       if (!pdfDoc || !canvasRef.current || pageOrder.length === 0) return
 
@@ -176,41 +255,101 @@ export default function PDFEditor({ file }: PDFEditorProps) {
           const canvas = canvasRef.current
           const context = canvas?.getContext('2d')
           if (canvas && context) {
-            canvas.width = 600
-            canvas.height = 800
+            const zoomScale = Math.max(0.25, zoom / 100)
+            const isLandscapeBlank = pageOrientation === 'landscape'
+            const baseWidth = isLandscapeBlank ? 900 : 600
+            const baseHeight = isLandscapeBlank ? 600 : 800
+            const fitScale = Math.min(1.6, Math.max(0.45, availablePageWidth / baseWidth))
+            const displayWidth = Math.floor(baseWidth * fitScale * zoomScale)
+            const displayHeight = Math.floor(baseHeight * fitScale * zoomScale)
+            const displayCanvasWidth = displayWidth + rightPageGutter
+            const pixelRatio = window.devicePixelRatio || 1
+
+            canvas.width = Math.max(1, Math.floor(displayCanvasWidth * pixelRatio))
+            canvas.height = Math.max(1, Math.floor(displayHeight * pixelRatio))
+            canvas.style.width = `${displayCanvasWidth}px`
+            canvas.style.height = `${displayHeight}px`
             context.fillStyle = '#ffffff'
             context.fillRect(0, 0, canvas.width, canvas.height)
             context.fillStyle = '#94a3b8'
-            context.font = '24px Arial'
+            context.font = `${Math.max(12, 24 * fitScale * zoomScale * pixelRatio)}px Arial`
             context.textAlign = 'center'
-            context.fillText('Blank Page', canvas.width / 2, canvas.height / 2)
+            context.fillText('Blank Page', (displayWidth * pixelRatio) / 2, canvas.height / 2)
+            setPageContentSize({ width: displayWidth, height: displayHeight })
+            setPageCanvasSize({ width: displayCanvasWidth, height: displayHeight })
           }
           return
         }
 
         const page = await pdfDoc.getPage(actualPageIndex + 1)
+        if (isDisposed) return
+
         const rotation = await getPdfRotation(page)
-        const scale = (zoom / 100) * 2.35
-        const viewport = page.getViewport({ scale, rotation })
+        if (isDisposed) return
+
+        const baseViewport = page.getViewport({ scale: 1, rotation })
+        const fitScale = Math.min(1.6, Math.max(0.45, availablePageWidth / baseViewport.width))
+        const displayScale = fitScale * Math.max(0.25, zoom / 100)
+        const pixelRatio = window.devicePixelRatio || 1
+        const viewport = page.getViewport({ scale: displayScale * pixelRatio, rotation })
+        const contentDisplayWidth = Math.floor(viewport.width / pixelRatio)
+        const contentDisplayHeight = Math.floor(viewport.height / pixelRatio)
+        const canvasDisplayWidth = contentDisplayWidth + rightPageGutter
 
         const canvas = canvasRef.current
         const context = canvas.getContext('2d')
         if (!context) return
 
-        canvas.width = viewport.width
-        canvas.height = viewport.height
+        const previousRenderTask = renderTaskRef.current
+        if (previousRenderTask) {
+          previousRenderTask.cancel?.()
+          await previousRenderTask.promise.catch(() => undefined)
+          if (isDisposed) return
+        }
 
-        await page.render({
+        canvas.width = Math.max(1, Math.floor(canvasDisplayWidth * pixelRatio))
+        canvas.height = viewport.height
+        canvas.style.width = `${canvasDisplayWidth}px`
+        canvas.style.height = `${contentDisplayHeight}px`
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, canvas.width, canvas.height)
+
+        const renderTask = page.render({
           canvasContext: context,
           viewport: viewport,
-        }).promise
+        })
+        renderTaskRef.current = renderTask
+        await renderTask.promise
+
+        if (renderTaskRef.current === renderTask) {
+          renderTaskRef.current = null
+        }
+        setPageContentSize({ width: contentDisplayWidth, height: contentDisplayHeight })
+        setPageCanvasSize({ width: canvasDisplayWidth, height: contentDisplayHeight })
       } catch (err) {
-        console.error('Error rendering PDF page:', err)
+        if ((err as { name?: string })?.name !== 'RenderingCancelledException') {
+          console.error('Error rendering PDF page:', err)
+        }
       }
     }
 
     renderPage()
-  }, [pdfDoc, currentPage, zoom, pageOrder, pageOrientation, setCurrentPage])
+    return () => {
+      isDisposed = true
+      renderTaskRef.current?.cancel?.()
+      renderTaskRef.current = null
+    }
+  }, [
+    pdfDoc,
+    currentPage,
+    zoom,
+    pageOrder,
+    pageOrientation,
+    availablePageWidth,
+    rightPageGutter,
+    viewerWidth,
+    setCurrentPage,
+  ])
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if ((!isAddTextMode && activeTool !== 'text') || !canvasRef.current) return
@@ -218,8 +357,14 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     const rect = canvasRef.current.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
 
-    const xRatio = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
-    const yRatio = Math.min(Math.max((e.clientY - rect.top) / rect.height, 0), 1)
+    const contentWidth = pageContentSize.width || rect.width
+    const contentHeight = pageContentSize.height || rect.height
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    if (x < 0 || y < 0 || x > contentWidth || y > contentHeight) return
+
+    const xRatio = Math.min(Math.max(x / contentWidth, 0), 1)
+    const yRatio = Math.min(Math.max(y / contentHeight, 0), 1)
 
     const newAnnotation: PdfAnnotation = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -259,6 +404,63 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       })
     }
   }, [selectedAnnotationId, textColor, textFontFamily, textFontSize])
+
+  useEffect(() => {
+    const handleListCommand = (event: Event) => {
+      const detail = (event as CustomEvent<PdfListCommandDetail>).detail
+      if (!detail) return
+
+      const activeTextarea =
+        document.activeElement instanceof HTMLTextAreaElement
+          ? document.activeElement
+          : null
+      const targetId = activeTextarea?.dataset.pdfAnnotationId || selectedAnnotationId
+      if (!targetId) {
+        showErrorToast('Select a PDF text annotation before applying bullets or numbering.')
+        return
+      }
+
+      const selectionStart = activeTextarea?.dataset.pdfAnnotationId === targetId
+        ? activeTextarea.selectionStart
+        : null
+      const selectionEnd = activeTextarea?.dataset.pdfAnnotationId === targetId
+        ? activeTextarea.selectionEnd
+        : null
+
+      setAnnotations((previous) =>
+        previous.map((annotation) => {
+          if (annotation.id !== targetId) return annotation
+
+          const hasSelection =
+            selectionStart !== null &&
+            selectionEnd !== null &&
+            selectionStart !== selectionEnd
+
+          if (!hasSelection) {
+            return {
+              ...annotation,
+              text: applyListToPlainText(annotation.text, detail),
+            }
+          }
+
+          const start = selectionStart ?? 0
+          const end = selectionEnd ?? start
+          const before = annotation.text.slice(0, start)
+          const selected = annotation.text.slice(start, end)
+          const after = annotation.text.slice(end)
+
+          return {
+            ...annotation,
+            text: `${before}${applyListToPlainText(selected, detail)}${after}`,
+          }
+        })
+      )
+      setSelectedAnnotationId(targetId)
+    }
+
+    window.addEventListener('pdf-editor-list-command', handleListCommand)
+    return () => window.removeEventListener('pdf-editor-list-command', handleListCommand)
+  }, [selectedAnnotationId])
 
   const removeAnnotation = (id: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== id))
@@ -311,8 +513,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         let page
 
         if (originalIndex === -1) {
-          // Add a blank A4-ish page
-          page = outDoc.addPage([595, 842])
+          page = outDoc.addPage(pageOrientation === 'landscape' ? [842, 595] : [595, 842])
         } else {
           const [copiedPage] = await outDoc.copyPages(sourceDoc, [originalIndex])
           page = outDoc.addPage(copiedPage)
@@ -445,7 +646,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
 
   return (
     <div className="flex-1 min-h-0 bg-gray-100 flex overflow-hidden">
-      <div className="flex-1 min-w-0 overflow-auto p-0 sm:p-1 md:p-2 relative">
+      <div ref={viewerRef} className="flex-1 min-w-0 overflow-auto p-0 sm:p-1 md:p-2 relative">
         {/* Mode Toggle */}
         <div className="absolute top-4 right-6 z-20">
           <button
@@ -486,48 +687,57 @@ export default function PDFEditor({ file }: PDFEditorProps) {
           </div>
 
           <div className="rounded-lg border border-gray-200 bg-white p-0 sm:p-1 shadow-md">
-            <div ref={canvasContainerRef} className="relative mx-auto w-fit overflow-auto" style={{ maxHeight: 'calc(100vh - 170px)', transition: 'all 250ms ease' }}>
-              <div>
+            <div
+              ref={canvasContainerRef}
+              className="mx-auto w-fit overflow-auto bg-white shadow-[0_10px_30px_rgba(15,23,42,0.14)]"
+              style={{
+                maxHeight: 'calc(100vh - 170px)',
+                transition: 'width 250ms ease',
+              }}
+            >
+              <div className="relative w-fit">
                 <canvas
                   ref={canvasRef}
                   onClick={handleCanvasClick}
-                  className={`rounded border border-gray-100 h-auto ${isAddTextMode || activeTool === 'text'
+                  className={`block h-auto ${
+                    isAddTextMode || activeTool === 'text'
                       ? 'cursor-crosshair'
                       : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
-                        ? 'cursor-crosshair'
-                        : 'cursor-default'
-                    }`}
+                      ? 'cursor-crosshair'
+                      : 'cursor-default'
+                  }`}
                   style={{
                     maxWidth: 'none',
-                    width: 'auto',
-                    height: 'auto',
+                    width: pageCanvasSize.width ? `${pageCanvasSize.width}px` : undefined,
+                    height: pageCanvasSize.height ? `${pageCanvasSize.height}px` : undefined,
                     maxHeight: 'none',
                     display: 'block',
-                    margin: '0 auto',
                   }}
                 />
-              </div>
 
-              {pageAnnotations.map((annotation) => (
-                <textarea
-                  key={annotation.id}
-                  value={annotation.text}
-                  onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
-                  onFocus={() => setSelectedAnnotationId(annotation.id)}
-                  rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
-                  className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
+                {pageAnnotations.map((annotation) => (
+                  <textarea
+                    key={annotation.id}
+                    data-pdf-annotation-id={annotation.id}
+                    value={annotation.text}
+                    onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
+                    onFocus={() => setSelectedAnnotationId(annotation.id)}
+                    rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
+                    className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
+                      selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
                     }`}
-                  style={{
-                    left: `${annotation.xRatio * 100}%`,
-                    top: `${annotation.yRatio * 100}%`,
-                    fontSize: `${annotation.fontSize}px`,
-                    fontFamily: annotation.fontFamily,
-                    color: annotation.color,
-                    transform: 'translateY(-100%)',
-                    lineHeight: 1.25,
-                  }}
-                />
-              ))}
+                    style={{
+                      left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
+                      top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
+                      fontSize: `${annotation.fontSize}px`,
+                      fontFamily: annotation.fontFamily,
+                      color: annotation.color,
+                      transform: 'translateY(-100%)',
+                      lineHeight: 1.25,
+                    }}
+                  />
+                ))}
+              </div>
             </div>
 
             {selectedAnnotationId && (
@@ -596,14 +806,14 @@ export default function PDFEditor({ file }: PDFEditorProps) {
               </div>
             )}
           </div>
-       <EditorNavigation
-  current={currentPage}
-  total={pageOrder.length}
-  onPrevious={() => setCurrentPage(Math.max(1, currentPage - 1))}
-  onNext={() => setCurrentPage(Math.min(pageOrder.length, currentPage + 1))}
-  className="sticky bottom-0 z-20 border-t border-gray-200 bg-gray-100/95 backdrop-blur"
-  themeColor="#dc2626"  // ✅ Add this line
-/>
+          <EditorNavigation
+            current={currentPage}
+            total={pageOrder.length}
+            onPrevious={() => setCurrentPage(Math.max(1, currentPage - 1))}
+            onNext={() => setCurrentPage(Math.min(pageOrder.length, currentPage + 1))}
+            accentColor="#dc2626"
+            className="sticky bottom-0 z-20 border-t border-gray-200 bg-gray-100/95 backdrop-blur"
+          />
         </div>
       </div>
 

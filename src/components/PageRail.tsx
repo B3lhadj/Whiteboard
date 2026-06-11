@@ -390,7 +390,10 @@ export default function PageRail({
                           e.stopPropagation()
                           item.onDelete!()
                         }}
-                        className="p-2 bg-red-600 shadow-lg rounded-lg text-white hover:bg-red-700 transition-all transform hover:scale-110 active:scale-95"
+                        className="p-2 shadow-lg rounded-lg text-white transition-all transform hover:scale-110 hover:brightness-90 active:scale-95"
+                        style={{
+                          backgroundColor: accentColor,
+                        }}
                         title="Delete Page"
                       >
                         <Trash2 size={16} />

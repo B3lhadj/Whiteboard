@@ -108,6 +108,7 @@ export default function ImageEditor({ file }: ImageEditorProps) {
         total={1}
         onPrevious={() => undefined}
         onNext={() => undefined}
+        accentColor="#0891b2"
         className="shrink-0 border-t border-gray-200 bg-gray-100"
         themeColor={themeColor}  // Add this line
       />

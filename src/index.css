@@ -106,12 +106,22 @@ body {
 .word-editor-root .docx-wrapper > section,
 .word-editor-root section.docx {
   margin: 0 auto 16px;
+  width: var(--word-page-width, 794px) !important;
+  min-height: var(--word-page-height, 1123px) !important;
+  padding: var(--word-page-margin-top, 96px) var(--word-page-margin-right, 96px) var(--word-page-margin-bottom, 96px) var(--word-page-margin-left, 96px) !important;
   background: #ffffff;
   box-shadow: 0 6px 18px rgba(15, 23, 42, 0.16);
   border-radius: 6px;
   page-break-after: always;
   break-after: page;
+  column-count: var(--word-page-column-count, 1);
+  column-gap: var(--word-page-column-gap, 0px);
   overflow: visible;
+}
+
+.word-editor-root .word-virtual-page {
+  width: var(--word-page-width, 794px) !important;
+  min-height: var(--word-page-height, 1123px) !important;
 }
 
 /* Force page breaks on large divs within docx-wrapper  */
@@ -288,6 +298,73 @@ body {
   height: 100%;
   overflow: visible;
   pointer-events: none;
+}
+
+.editor-list-decimal,
+.editor-list-decimal ol {
+  list-style-type: decimal;
+}
+
+.editor-list-decimal ol ol {
+  list-style-type: lower-alpha;
+}
+
+.editor-list-decimal ol ol ol {
+  list-style-type: lower-roman;
+}
+
+.editor-list-heading,
+.editor-list-heading ol {
+  list-style-type: upper-alpha;
+}
+
+.editor-list-heading ol ol {
+  list-style-type: decimal;
+}
+
+.editor-list-heading ol ol ol {
+  list-style-type: lower-alpha;
+}
+
+.editor-list-legal,
+.editor-list-legal ol {
+  list-style-type: upper-roman;
+}
+
+.editor-list-legal ol ol {
+  list-style-type: decimal-leading-zero;
+}
+
+.editor-list-legal ol ol ol {
+  list-style-type: lower-roman;
+}
+
+.editor-bullet-disc {
+  list-style-type: disc;
+}
+
+.editor-bullet-circle {
+  list-style-type: circle;
+}
+
+.editor-bullet-square {
+  list-style-type: square;
+}
+
+.editor-bullet-arrow {
+  list-style-type: "\27a4 ";
+}
+
+.editor-bullet-check {
+  list-style-type: "\2713 ";
+}
+
+.editor-bullet-diamond {
+  list-style-type: "\2756 ";
+}
+
+.editor-bullet-plus {
+  list-style-type: "\2723 ";
 }
 
 @media print {

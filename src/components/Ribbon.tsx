@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { useDocumentStore } from '../store'
-import { getThemeForFileType } from '../utils'
+import { getEditorLanguageSettings, getThemeForFileType, normalizeEditorLanguage } from '../utils'
 import {
   EDITOR_FONT_FAMILIES,
   EDITOR_FONT_SIZES,
@@ -13,6 +13,8 @@ import {
   FilePlus,
   FileX,
   Home,
+  Undo2,
+  Redo2,
   Save,
   SaveAll,
   FolderOpen,
@@ -26,10 +28,17 @@ import {
   Bold,
   Italic,
   Underline,
+  Strikethrough,
+  Subscript,
+  Superscript,
   AlignLeft,
   AlignCenter,
   AlignRight,
   AlignJustify,
+  Highlighter,
+  List,
+  ListOrdered,
+  ListTree,
   Replace,
   Search,
   ChevronDown,
@@ -41,8 +50,20 @@ import {
   Info,
   Share2,
   Palette,
+  Ruler,
+  FileText,
+  Columns,
+  Languages,
 } from 'lucide-react'
-import backIcon from '../assets/Back.png'
+import {
+  PAGE_COLUMN_OPTIONS,
+  PAGE_MARGIN_OPTIONS,
+  PAGE_SIZE_OPTIONS,
+  type PageColumnCount,
+  type PageMarginPreset,
+  type PageOrientation,
+  type PageSizePreset,
+} from '../pageLayout'
 
 export interface RibbonActions {
   onSave?: () => void | Promise<void>
@@ -52,9 +73,18 @@ export interface RibbonActions {
   onPrint?: () => void | Promise<void>
   onZoomIn?: () => void
   onZoomOut?: () => void
+  onUndoLast?: () => void
+  onUndo?: (steps?: number) => void
+  onRedo?: () => void
+  undoHistory?: string[]
+  undoAvailable?: boolean
+  redoAvailable?: boolean
   onToggleBold?: () => void
   onToggleItalic?: () => void
   onToggleUnderline?: () => void
+  onToggleStrikethrough?: () => void
+  onToggleSubscript?: () => void
+  onToggleSuperscript?: () => void
   onAlignLeft?: () => void
   onAlignCenter?: () => void
   onAlignRight?: () => void
@@ -62,6 +92,12 @@ export interface RibbonActions {
   onSetFontFamily?: (font: string) => void
   onSetFontSize?: (size: number) => void
   onSetColor?: (color: string) => void
+  onSetHighlight?: (color: string) => void
+  onSetTextEffect?: (effect: TextEffectValue) => void
+  onToggleBulletedList?: () => void
+  onSetBulletedList?: (style: BulletListValue) => void
+  onToggleNumberedList?: () => void
+  onSetMultilevelList?: (style: MultilevelListValue) => void
   onFind?: () => void
   onReplace?: () => void
   onSetTool?: (tool: 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase') => void
@@ -77,6 +113,244 @@ export interface RibbonActions {
   isPanActive?: boolean
 }
 
+export type TextEffectValue = 'none' | 'shadow' | 'glow' | 'outline' | 'lifted'
+export type BulletListValue = 'none' | 'disc' | 'circle' | 'square' | 'arrow' | 'check' | 'diamond' | 'plus'
+export type MultilevelListValue = 'decimal' | 'heading' | 'legal'
+
+const TEXT_EFFECT_OPTIONS: RibbonMenuOption<TextEffectValue>[] = [
+  { value: 'none', label: 'No effect', description: 'Remove text effects' },
+  { value: 'shadow', label: 'Shadow', description: 'Soft drop shadow' },
+  { value: 'glow', label: 'Glow', description: 'Blue text glow' },
+  { value: 'outline', label: 'Outline', description: 'Thin text outline' },
+  { value: 'lifted', label: 'Lifted', description: 'Raised highlight style' },
+]
+
+const HIGHLIGHT_OPTIONS = [
+  { color: 'transparent', label: 'No highlight' },
+  { color: '#fff59d', label: 'Yellow' },
+  { color: '#bbf7d0', label: 'Green' },
+  { color: '#bfdbfe', label: 'Blue' },
+  { color: '#fecaca', label: 'Red' },
+  { color: '#e9d5ff', label: 'Purple' },
+  { color: '#fed7aa', label: 'Orange' },
+]
+
+const BULLET_LIBRARY_OPTIONS: Array<{
+  value: BulletListValue
+  label: string
+  preview: string
+}> = [
+  { value: 'none', label: 'Aucune', preview: 'Aucune' },
+  { value: 'disc', label: 'Puce pleine', preview: '\u25cf' },
+  { value: 'circle', label: 'Puce vide', preview: '\u25cb' },
+  { value: 'square', label: 'Carre', preview: '\u25a0' },
+  { value: 'plus', label: 'Plus', preview: '\u2723' },
+  { value: 'diamond', label: 'Losanges', preview: '\u2756' },
+  { value: 'arrow', label: 'Fleche', preview: '\u27a4' },
+  { value: 'check', label: 'Coche', preview: '\u2713' },
+]
+
+const MULTILEVEL_LIST_OPTIONS: RibbonMenuOption<MultilevelListValue>[] = [
+  { value: 'decimal', label: '1. 1.1. 1.1.1', shortLabel: 'Numbered levels' },
+  { value: 'heading', label: 'A. Heading 2 / 1. Heading', shortLabel: 'Heading levels' },
+  { value: 'legal', label: 'Article I / Section 1.01', shortLabel: 'Legal levels' },
+]
+
+const LANGUAGE_OPTIONS = ['English', 'Arabic', 'French', 'Spanish'] as const
+
+const RIBBON_TRANSLATIONS: Record<string, Record<string, string>> = {
+  English: {},
+  French: {
+    'Home mode': 'Mode accueil',
+    'Word mode': 'Mode Word',
+    'PDF mode': 'Mode PDF',
+    'PowerPoint mode': 'Mode PowerPoint',
+    'Excel mode': 'Mode Excel',
+    'Image mode': 'Mode image',
+    File: 'Fichier',
+    Quick: 'Rapide',
+    Redo: 'Refaire',
+    Image: 'Image',
+    'Rotate Left': 'Tourner gauche',
+    'Rotate Right': 'Tourner droite',
+    Pan: 'Deplacer',
+    'Reset View': 'Reinitialiser',
+    Tools: 'Outils',
+    Select: 'Selection',
+    Shape: 'Forme',
+    Draw: 'Dessin',
+    Text: 'Texte',
+    Erase: 'Effacer',
+    Font: 'Police',
+    Bold: 'Gras',
+    Italic: 'Italique',
+    Underline: 'Souligner',
+    Strikethrough: 'Barre',
+    Subscript: 'Indice',
+    Superscript: 'Exposant',
+    Left: 'Gauche',
+    Center: 'Centre',
+    Right: 'Droite',
+    Justify: 'Justifier',
+    Colors: 'Couleurs',
+    Effects: 'Effets',
+    Highlight: 'Surligner',
+    Lists: 'Listes',
+    Bullets: 'Puces',
+    Numbering: 'Numerotation',
+    Levels: 'Niveaux',
+    'Mise en page': 'Mise en page',
+    Marges: 'Marges',
+    Orientation: 'Orientation',
+    Taille: 'Taille',
+    Colonnes: 'Colonnes',
+    'Find & Replace': 'Rechercher',
+    Replace: 'Remplacer',
+    Find: 'Trouver',
+    Language: 'Langue',
+    Back: 'Retour',
+    Account: 'Compte',
+    Exit: 'Quitter',
+    English: 'Anglais',
+    Arabic: 'Arabe',
+    French: 'Francais',
+    Spanish: 'Espagnol',
+    Undo: 'Annuler',
+    'Undo history': 'Historique',
+    'Aucune modification': 'Aucune modification',
+    Annuler: 'Annuler',
+    Light: 'Clair',
+    Dark: 'Sombre',
+  },
+  Spanish: {
+    'Home mode': 'Modo inicio',
+    'Word mode': 'Modo Word',
+    'PDF mode': 'Modo PDF',
+    'PowerPoint mode': 'Modo PowerPoint',
+    'Excel mode': 'Modo Excel',
+    'Image mode': 'Modo imagen',
+    File: 'Archivo',
+    Quick: 'Rapido',
+    Redo: 'Rehacer',
+    Image: 'Imagen',
+    'Rotate Left': 'Girar izq.',
+    'Rotate Right': 'Girar der.',
+    Pan: 'Mover',
+    'Reset View': 'Restablecer',
+    Tools: 'Herramientas',
+    Select: 'Seleccionar',
+    Shape: 'Forma',
+    Draw: 'Dibujar',
+    Text: 'Texto',
+    Erase: 'Borrar',
+    Font: 'Fuente',
+    Bold: 'Negrita',
+    Italic: 'Cursiva',
+    Underline: 'Subrayar',
+    Strikethrough: 'Tachado',
+    Subscript: 'Subindice',
+    Superscript: 'Superindice',
+    Left: 'Izquierda',
+    Center: 'Centro',
+    Right: 'Derecha',
+    Justify: 'Justificar',
+    Colors: 'Colores',
+    Effects: 'Efectos',
+    Highlight: 'Resaltar',
+    Lists: 'Listas',
+    Bullets: 'Vinetas',
+    Numbering: 'Numeracion',
+    Levels: 'Niveles',
+    'Mise en page': 'Diseno',
+    Marges: 'Margenes',
+    Orientation: 'Orientacion',
+    Taille: 'Tamano',
+    Colonnes: 'Columnas',
+    'Find & Replace': 'Buscar',
+    Replace: 'Reemplazar',
+    Find: 'Buscar',
+    Language: 'Idioma',
+    Back: 'Atras',
+    Account: 'Cuenta',
+    Exit: 'Salir',
+    English: 'Ingles',
+    Arabic: 'Arabe',
+    French: 'Frances',
+    Spanish: 'Espanol',
+    Undo: 'Deshacer',
+    'Undo history': 'Historial',
+    'Aucune modification': 'Sin cambios',
+    Annuler: 'Cancelar',
+    Light: 'Claro',
+    Dark: 'Oscuro',
+  },
+  Arabic: {
+    'Home mode': 'وضع البداية',
+    'Word mode': 'وضع وورد',
+    'PDF mode': 'وضع PDF',
+    'PowerPoint mode': 'وضع باوربوينت',
+    'Excel mode': 'وضع اكسل',
+    'Image mode': 'وضع الصورة',
+    File: 'ملف',
+    Quick: 'سريع',
+    Redo: 'اعادة',
+    Image: 'صورة',
+    'Rotate Left': 'تدوير يسار',
+    'Rotate Right': 'تدوير يمين',
+    Pan: 'تحريك',
+    'Reset View': 'اعادة العرض',
+    Tools: 'ادوات',
+    Select: 'تحديد',
+    Shape: 'شكل',
+    Draw: 'رسم',
+    Text: 'نص',
+    Erase: 'مسح',
+    Font: 'خط',
+    Bold: 'غامق',
+    Italic: 'مائل',
+    Underline: 'تحته خط',
+    Strikethrough: 'مشطوب',
+    Subscript: 'منخفض',
+    Superscript: 'مرتفع',
+    Left: 'يسار',
+    Center: 'وسط',
+    Right: 'يمين',
+    Justify: 'ضبط',
+    Colors: 'الوان',
+    Effects: 'تاثيرات',
+    Highlight: 'تمييز',
+    Lists: 'قوائم',
+    Bullets: 'نقاط',
+    Numbering: 'ترقيم',
+    Levels: 'مستويات',
+    'Mise en page': 'تخطيط',
+    Marges: 'هوامش',
+    Orientation: 'اتجاه',
+    Taille: 'حجم',
+    Colonnes: 'اعمدة',
+    'Find & Replace': 'بحث',
+    Replace: 'استبدال',
+    Find: 'بحث',
+    Language: 'اللغة',
+    Back: 'رجوع',
+    Account: 'حساب',
+    Exit: 'خروج',
+    English: 'الانجليزية',
+    Arabic: 'العربية',
+    French: 'الفرنسية',
+    Spanish: 'الاسبانية',
+    Undo: 'تراجع',
+    'Undo history': 'السجل',
+    'Aucune modification': 'لا تغييرات',
+    Annuler: 'الغاء',
+    Light: 'فاتح',
+    Dark: 'داكن',
+  },
+}
+
+const translateRibbon = (language: string, label: string) =>
+  RIBBON_TRANSLATIONS[language]?.[label] || label
+
 interface RibbonProps {
   fileType?: string | null
   actions?: RibbonActions
@@ -89,13 +363,22 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
     bold: false,
     italic: false,
     underline: false,
+    strikeThrough: false,
+    subscript: false,
+    superscript: false,
   })
+  const [selectedTextEffect, setSelectedTextEffect] = useState<TextEffectValue>('none')
+  const [selectedBulletStyle, setSelectedBulletStyle] = useState<BulletListValue>('disc')
+  const [selectedListStyle, setSelectedListStyle] = useState<MultilevelListValue>('decimal')
   const toggleDarkMode = useDocumentStore((state) => state.toggleDarkMode)
   const darkMode = useDocumentStore((state) => state.darkMode)
   const activeTool = useDocumentStore((state) => state.activeTool)
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
   const selectedLanguage = useDocumentStore((state) => state.selectedLanguage)
   const setSelectedLanguage = useDocumentStore((state) => state.setSelectedLanguage)
+  const toolbarLanguage = normalizeEditorLanguage(selectedLanguage)
+  const toolbarLanguageSettings = getEditorLanguageSettings(toolbarLanguage)
+  const t = (label: string) => translateRibbon(toolbarLanguage, label)
 
   const themeColor = themeColorOverride || (fileType
     ? getThemeForFileType(fileType as any)
@@ -103,20 +386,26 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
 
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
   const setPageOrientation = useDocumentStore((state) => state.setPageOrientation)
+  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const setPageMarginPreset = useDocumentStore((state) => state.setPageMarginPreset)
+  const pageSize = useDocumentStore((state) => state.pageSize)
+  const setPageSize = useDocumentStore((state) => state.setPageSize)
+  const pageColumns = useDocumentStore((state) => state.pageColumns)
+  const setPageColumns = useDocumentStore((state) => state.setPageColumns)
 
   const modeLabel =
     !fileType
-      ? 'Home mode'
+      ? t('Home mode')
       :
     fileType === 'pptx'
-      ? 'PowerPoint mode'
+      ? t('PowerPoint mode')
       : fileType === 'pdf'
-      ? 'PDF mode'
+      ? t('PDF mode')
       : fileType === 'xlsx'
-      ? 'Excel mode'
+      ? t('Excel mode')
       : fileType === 'image'
-      ? 'Image mode'
-      : 'Word mode'
+      ? t('Image mode')
+      : t('Word mode')
 
   const handlePrint = () => {
     if (actions?.onPrint) {
@@ -132,6 +421,9 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
         bold: document.queryCommandState('bold'),
         italic: document.queryCommandState('italic'),
         underline: document.queryCommandState('underline'),
+        strikeThrough: document.queryCommandState('strikeThrough'),
+        subscript: document.queryCommandState('subscript'),
+        superscript: document.queryCommandState('superscript'),
       })
     }
 
@@ -141,7 +433,13 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
   }, [])
 
   return (
-    <div className="relative border-b border-gray-300 bg-white shadow-sm" data-print-hidden="true">
+    <div
+      key={toolbarLanguage}
+      className="relative border-b border-gray-300 bg-white shadow-sm"
+      data-print-hidden="true"
+      lang={toolbarLanguageSettings.lang}
+      dir={toolbarLanguageSettings.dir}
+    >
       <div className="flex items-center justify-between gap-3 bg-[#f3f4f6] px-4 py-1.5 text-[11px] text-gray-600">
         <div className="flex items-center gap-2 font-medium">
           <Home size={14} />
@@ -150,9 +448,9 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
         <button
           onClick={toggleDarkMode}
           className="rounded px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-white hover:shadow-sm"
-          title="Toggle dark mode"
+          title={t('Toggle dark mode')}
         >
-          {darkMode ? 'Light' : 'Dark'}
+          {darkMode ? t('Light') : t('Dark')}
         </button>
       </div>
 
@@ -161,50 +459,69 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
           onClick={() => setShowFileMenu(true)}
           className="mx-1 flex min-h-[76px] w-[74px] shrink-0 flex-col items-center justify-center rounded-xl border border-white/20 bg-white/10 text-[12px] font-semibold uppercase tracking-[0.18em] text-white/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] hover:bg-white/20"
         >
-          File
+          {t('File')}
         </button>
+
+        <RibbonGroup label={t('Quick')}>
+          <UndoHistoryButton
+            history={actions?.undoHistory || []}
+            undoLabel={t('Undo')}
+            undoHistoryLabel={t('Undo history')}
+            emptyLabel={t('Aucune modification')}
+            cancelLabel={t('Annuler')}
+            onUndoLast={actions?.onUndoLast}
+            onUndo={actions?.onUndo}
+            disabled={!actions?.onUndoLast || !actions?.undoAvailable}
+          />
+          <RibbonButton
+            icon={<Redo2 size={18} />}
+            label={t('Redo')}
+            onClick={actions?.onRedo}
+            disabled={!actions?.onRedo || !actions?.redoAvailable}
+          />
+        </RibbonGroup>
 
         {/* Image Controls - only show when file is image */}
         {fileType === 'image' && (
-          <RibbonGroup label="Image">
+          <RibbonGroup label={t('Image')}>
             <RibbonButton 
               icon={<RotateCcw size={18} />} 
-              label="Rotate Left" 
+              label={t('Rotate Left')}
               onClick={actions?.onRotateLeft} 
               disabled={!actions?.onRotateLeft} 
             />
             <RibbonButton 
               icon={<RotateCw size={18} />} 
-              label="Rotate Right" 
+              label={t('Rotate Right')}
               onClick={actions?.onRotateRight} 
               disabled={!actions?.onRotateRight} 
             />
             <RibbonButton 
               icon={<Move size={18} />} 
-              label="Pan" 
+              label={t('Pan')}
               onClick={actions?.onTogglePan}
               active={actions?.isPanActive}
               disabled={!actions?.onTogglePan}
             />
             <RibbonButton 
               icon={<RefreshCw size={18} />} 
-              label="Reset View" 
+              label={t('Reset View')}
               onClick={actions?.onResetPosition} 
               disabled={!actions?.onResetPosition} 
             />
           </RibbonGroup>
         )}
 
-        <RibbonGroup label="Tools">
-          <RibbonButton icon={<MousePointer2 size={18} />} label="Select" active={activeTool === 'select'} onClick={() => { setActiveTool('select'); actions?.onSetTool?.('select') }} />
-          <RibbonButton icon={<Square size={18} />} label="Shape" active={activeTool === 'shape'} onClick={() => { setActiveTool('shape'); actions?.onSetTool?.('shape') }} />
-          <RibbonButton icon={<Image size={18} />} label="Image" active={activeTool === 'image'} onClick={() => { setActiveTool('image'); actions?.onSetTool?.('image') }} />
-          <RibbonButton icon={<PenTool size={18} />} label="Draw" active={activeTool === 'draw'} onClick={() => { setActiveTool('draw'); actions?.onSetTool?.('draw') }} />
-          <RibbonButton icon={<Type size={18} />} label="Text" active={activeTool === 'text'} onClick={() => { setActiveTool('text'); actions?.onSetTool?.('text') }} />
-          <RibbonButton icon={<Eraser size={18} />} label="Erase" active={activeTool === 'erase'} onClick={() => { setActiveTool('erase'); actions?.onSetTool?.('erase') }} />
+        <RibbonGroup label={t('Tools')}>
+          <RibbonButton icon={<MousePointer2 size={18} />} label={t('Select')} active={activeTool === 'select'} onClick={() => { setActiveTool('select'); actions?.onSetTool?.('select') }} />
+          <RibbonButton icon={<Square size={18} />} label={t('Shape')} active={activeTool === 'shape'} onClick={() => { setActiveTool('shape'); actions?.onSetTool?.('shape') }} />
+          <RibbonButton icon={<Image size={18} />} label={t('Image')} active={activeTool === 'image'} onClick={() => { setActiveTool('image'); actions?.onSetTool?.('image') }} />
+          <RibbonButton icon={<PenTool size={18} />} label={t('Draw')} active={activeTool === 'draw'} onClick={() => { setActiveTool('draw'); actions?.onSetTool?.('draw') }} />
+          <RibbonButton icon={<Type size={18} />} label={t('Text')} active={activeTool === 'text'} onClick={() => { setActiveTool('text'); actions?.onSetTool?.('text') }} />
+          <RibbonButton icon={<Eraser size={18} />} label={t('Erase')} active={activeTool === 'erase'} onClick={() => { setActiveTool('erase'); actions?.onSetTool?.('erase') }} />
         </RibbonGroup>
 
-        <RibbonGroup label="Font">
+        <RibbonGroup label={t('Font')}>
           <div className="flex items-center gap-2">
             <select
               defaultValue="Calibri"
@@ -230,73 +547,135 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
             </select>
           </div>
           <div className="mt-2 flex items-center gap-1">
-            <RibbonButton icon={<Bold size={16} />} label="Bold" compact active={formatState.bold} onClick={actions?.onToggleBold} disabled={!actions?.onToggleBold} />
-            <RibbonButton icon={<Italic size={16} />} label="Italic" compact active={formatState.italic} onClick={actions?.onToggleItalic} disabled={!actions?.onToggleItalic} />
-            <RibbonButton icon={<Underline size={16} />} label="Underline" compact active={formatState.underline} onClick={actions?.onToggleUnderline} disabled={!actions?.onToggleUnderline} />
+            <RibbonButton icon={<Bold size={16} />} label={t('Bold')} compact active={formatState.bold} onClick={actions?.onToggleBold} disabled={!actions?.onToggleBold} />
+            <RibbonButton icon={<Italic size={16} />} label={t('Italic')} compact active={formatState.italic} onClick={actions?.onToggleItalic} disabled={!actions?.onToggleItalic} />
+            <RibbonButton icon={<Underline size={16} />} label={t('Underline')} compact active={formatState.underline} onClick={actions?.onToggleUnderline} disabled={!actions?.onToggleUnderline} />
+            <RibbonButton icon={<Strikethrough size={16} />} label={t('Strikethrough')} compact active={formatState.strikeThrough} onClick={actions?.onToggleStrikethrough} disabled={!actions?.onToggleStrikethrough} />
+            <RibbonButton icon={<Subscript size={16} />} label={t('Subscript')} compact active={formatState.subscript} onClick={actions?.onToggleSubscript} disabled={!actions?.onToggleSubscript} />
+            <RibbonButton icon={<Superscript size={16} />} label={t('Superscript')} compact active={formatState.superscript} onClick={actions?.onToggleSuperscript} disabled={!actions?.onToggleSuperscript} />
           </div>
           <div className="mt-1 flex items-center gap-1">
-            <RibbonButton icon={<AlignLeft size={16} />} label="Left" compact onClick={actions?.onAlignLeft} disabled={!actions?.onAlignLeft} />
-            <RibbonButton icon={<AlignCenter size={16} />} label="Center" compact onClick={actions?.onAlignCenter} disabled={!actions?.onAlignCenter} />
-            <RibbonButton icon={<AlignRight size={16} />} label="Right" compact onClick={actions?.onAlignRight} disabled={!actions?.onAlignRight} />
-            <RibbonButton icon={<AlignJustify size={16} />} label="Justify" compact onClick={actions?.onAlignJustify} disabled={!actions?.onAlignJustify} />
+            <RibbonButton icon={<AlignLeft size={16} />} label={t('Left')} compact onClick={actions?.onAlignLeft} disabled={!actions?.onAlignLeft} />
+            <RibbonButton icon={<AlignCenter size={16} />} label={t('Center')} compact onClick={actions?.onAlignCenter} disabled={!actions?.onAlignCenter} />
+            <RibbonButton icon={<AlignRight size={16} />} label={t('Right')} compact onClick={actions?.onAlignRight} disabled={!actions?.onAlignRight} />
+            <RibbonButton icon={<AlignJustify size={16} />} label={t('Justify')} compact onClick={actions?.onAlignJustify} disabled={!actions?.onAlignJustify} />
           </div>
         </RibbonGroup>
 
-        <RibbonGroup label="Colors">
+        <RibbonGroup label={t('Colors')}>
           <OfficeColorPicker onSetColor={actions?.onSetColor} themeColor={themeColor} />
+          <RibbonMenuButton<TextEffectValue>
+            icon={<span className="text-lg font-semibold leading-none drop-shadow-[0_0_3px_rgba(255,255,255,0.85)]">A</span>}
+            label={t('Effects')}
+            value={selectedTextEffect}
+            options={TEXT_EFFECT_OPTIONS}
+            onSelect={(effect) => {
+              setSelectedTextEffect(effect)
+              actions?.onSetTextEffect?.(effect)
+            }}
+            disabled={!actions?.onSetTextEffect}
+          />
+          <HighlightMenuButton label={t('Highlight')} onSelect={actions?.onSetHighlight} disabled={!actions?.onSetHighlight} />
+        </RibbonGroup>
+
+        <RibbonGroup label={t('Lists')}>
+          <BulletLibraryMenuButton
+            label={t('Bullets')}
+            value={selectedBulletStyle}
+            onSelect={(style) => {
+              setSelectedBulletStyle(style)
+              actions?.onSetBulletedList?.(style)
+            }}
+            onToggle={actions?.onToggleBulletedList}
+            disabled={!actions?.onSetBulletedList && !actions?.onToggleBulletedList}
+          />
+          <RibbonButton icon={<ListOrdered size={18} />} label={t('Numbering')} onClick={actions?.onToggleNumberedList} disabled={!actions?.onToggleNumberedList} />
+          <RibbonMenuButton<MultilevelListValue>
+            icon={<ListTree size={18} />}
+            label={t('Levels')}
+            value={selectedListStyle}
+            options={MULTILEVEL_LIST_OPTIONS}
+            onSelect={(style) => {
+              setSelectedListStyle(style)
+              actions?.onSetMultilevelList?.(style)
+            }}
+            disabled={!actions?.onSetMultilevelList}
+          />
         </RibbonGroup>
 
         {(fileType === 'pdf' || fileType === 'pptx' || fileType === 'docx') && (
-          <RibbonGroup label="Layout">
-            <RibbonButton
-              icon={<RotateCcw size={18} />}
-              label="Portrait"
-              compact
-              active={pageOrientation === 'portrait'}
-              onClick={() => setPageOrientation('portrait')}
+          <RibbonGroup label={t('Mise en page')}>
+            <RibbonMenuButton<PageMarginPreset>
+              icon={<Ruler size={18} />}
+              label={t('Marges')}
+              value={pageMarginPreset}
+              options={PAGE_MARGIN_OPTIONS}
+              onSelect={setPageMarginPreset}
             />
-            <RibbonButton
-              icon={<RotateCw size={18} />}
-              label="Landscape"
-              compact
-              active={pageOrientation === 'landscape'}
-              onClick={() => setPageOrientation('landscape')}
+            <RibbonMenuButton<PageOrientation>
+              icon={pageOrientation === 'portrait' ? <RotateCcw size={18} /> : <RotateCw size={18} />}
+              label={t('Orientation')}
+              value={pageOrientation}
+              options={[
+                { value: 'portrait', label: 'Portrait', description: 'Page verticale' },
+                { value: 'landscape', label: 'Paysage', description: 'Page horizontale' },
+              ]}
+              onSelect={setPageOrientation}
+            />
+            <RibbonMenuButton<PageSizePreset>
+              icon={<FileText size={18} />}
+              label={t('Taille')}
+              value={pageSize}
+              options={PAGE_SIZE_OPTIONS}
+              onSelect={setPageSize}
+            />
+            <RibbonMenuButton<PageColumnCount>
+              icon={<Columns size={18} />}
+              label={t('Colonnes')}
+              value={pageColumns}
+              options={PAGE_COLUMN_OPTIONS}
+              onSelect={setPageColumns}
             />
           </RibbonGroup>
         )}
 
-        <RibbonGroup label="Find & Replace">
-          <RibbonButton icon={<Replace size={18} />} label="Replace" onClick={actions?.onReplace} disabled={!actions?.onReplace} />
-          <RibbonButton icon={<Search size={18} />} label="Find" onClick={actions?.onFind} disabled={!actions?.onFind} />
+        <RibbonGroup label={t('Find & Replace')}>
+          <RibbonButton icon={<Replace size={18} />} label={t('Replace')} onClick={actions?.onReplace} disabled={!actions?.onReplace} />
+          <RibbonButton icon={<Search size={18} />} label={t('Find')} onClick={actions?.onFind} disabled={!actions?.onFind} />
         </RibbonGroup>
 
-        <RibbonGroup label="Language">
-          <select
-            value={selectedLanguage}
-            onChange={(e) => {
-              setSelectedLanguage(e.target.value)
-              actions?.onSetLanguage?.(e.target.value)
+        <RibbonGroup label={t('Language')}>
+          <LanguageMenuButton
+            value={toolbarLanguage}
+            label={t(toolbarLanguage)}
+            options={LANGUAGE_OPTIONS.map((language) => ({
+              value: language,
+              label: t(language),
+            }))}
+            onSelect={(language) => {
+              const nextLanguage = normalizeEditorLanguage(language)
+              setSelectedLanguage(nextLanguage)
+              actions?.onSetLanguage?.(nextLanguage)
             }}
-            className="h-10 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-[12px] font-medium text-white outline-none hover:bg-white/20"
-          >
-            <option className="text-gray-800">English</option>
-            <option className="text-gray-800">Arabic</option>
-            <option className="text-gray-800">French</option>
-            <option className="text-gray-800">Spanish</option>
-          </select>
+          />
         </RibbonGroup>
 
-        <RibbonGroup label="Clear" alignRight>
-          <button onClick={actions?.onBack} className="flex flex-col items-center justify-center rounded-lg border border-white/20 bg-white/10 px-3 py-2 h-10 w-10 hover:bg-white/20">
-            <img src={backIcon} alt="Back" className="w-6 h-6 mb-1" />
-            <span className="text-[10px] font-medium text-white">Back</span>
+        <RibbonGroup label={t('Back')} alignRight>
+          <button
+            onClick={actions?.onBack}
+            disabled={!actions?.onBack}
+            className="flex h-10 w-10 flex-col items-center justify-center rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-white hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+            title={t('Back')}
+          >
+            <ArrowLeft size={18} />
+            <span className="text-[10px] font-medium text-white">{t('Back')}</span>
           </button>
         </RibbonGroup>
 
-        <RibbonGroup label="Account" alignRight>
+        <RibbonGroup label={t('Account')} alignRight>
           <button onClick={actions?.onLogout} className="flex items-center gap-2 rounded-lg border border-white/20 bg-white/10 px-3 py-2 text-[12px] font-medium hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40" disabled={!actions?.onLogout}>
             <DoorOpen size={16} />
-            Exit
+            {t('Exit')}
           </button>
         </RibbonGroup>
       </div>
@@ -987,6 +1366,331 @@ function FileMenuItem({
   )
 }
 
+function HighlightMenuButton({
+  label = 'Highlight',
+  onSelect,
+  disabled = false,
+}: {
+  label?: string
+  onSelect?: (color: string) => void
+  disabled?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [selectedColor, setSelectedColor] = useState('#fff59d')
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 224)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const chooseHighlight = (color: string) => {
+    setSelectedColor(color === 'transparent' ? '#fff59d' : color)
+    onSelect?.(color)
+    setIsOpen(false)
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        disabled={disabled}
+        className="group flex h-12 min-w-[78px] flex-col items-center justify-center rounded-lg px-2 text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+        title={label}
+      >
+        <span className="flex items-center gap-1">
+          <span className="relative flex h-6 w-6 items-center justify-center">
+            <Highlighter size={18} />
+            <span
+              className="absolute bottom-0 h-1 w-5 rounded-sm border border-white/30"
+              style={{ backgroundColor: selectedColor }}
+            />
+          </span>
+          <ChevronDown size={12} />
+        </span>
+        <span className="mt-1 max-w-[72px] truncate text-[10px] font-medium text-white/95">
+          {label}
+        </span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close highlight menu"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-52 overflow-hidden rounded-md border border-white/20 bg-white py-1 text-gray-800 shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+            }}
+          >
+            <div className="border-b border-gray-100 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-gray-500">
+              Highlight
+            </div>
+            {HIGHLIGHT_OPTIONS.map((option) => (
+              <button
+                key={option.color}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => chooseHighlight(option.color)}
+                className="flex w-full items-center gap-3 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100"
+              >
+                <span
+                  className="h-5 w-5 rounded-sm border border-gray-300"
+                  style={{
+                    backgroundColor: option.color === 'transparent' ? '#ffffff' : option.color,
+                    backgroundImage:
+                      option.color === 'transparent'
+                        ? 'linear-gradient(135deg, transparent 45%, #ef4444 46%, #ef4444 54%, transparent 55%)'
+                        : undefined,
+                  }}
+                />
+                <span className="truncate">{option.label}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+function BulletLibraryMenuButton({
+  label = 'Bullets',
+  value,
+  onSelect,
+  onToggle,
+  disabled = false,
+}: {
+  label?: string
+  value: BulletListValue
+  onSelect?: (style: BulletListValue) => void
+  onToggle?: () => void
+  disabled?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const selectedOption = BULLET_LIBRARY_OPTIONS.find((option) => option.value === value)
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 396)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const selectStyle = (style: BulletListValue) => {
+    onSelect?.(style)
+    setIsOpen(false)
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        disabled={disabled}
+        className="group flex h-12 min-w-[78px] flex-col items-center justify-center rounded-lg px-2 text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+        title={`${label}: ${selectedOption?.label || ''}`}
+      >
+        <span className="flex items-center gap-1">
+          <List size={18} />
+          <ChevronDown size={12} />
+        </span>
+        <span className="mt-1 max-w-[72px] truncate text-[10px] font-medium text-white/95">
+          {label}
+        </span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close bullets menu"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-[384px] max-w-[calc(100vw-16px)] overflow-hidden rounded-md border border-white/25 bg-[#262626] text-white shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+            }}
+          >
+            <div className="px-5 pb-2 pt-3 text-sm font-semibold">
+              Bibliotheque de puces
+            </div>
+
+            <div className="grid grid-cols-6 gap-2 px-3 pb-4">
+              {BULLET_LIBRARY_OPTIONS.map((option) => {
+                const isSelected = option.value === value
+                return (
+                  <button
+                    key={option.value}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectStyle(option.value)}
+                    className={`flex h-[54px] items-center justify-center border bg-white text-black transition-colors hover:border-white ${
+                      isSelected ? 'border-2 border-white ring-1 ring-white/70' : 'border-[#262626]'
+                    }`}
+                    title={option.label}
+                  >
+                    <span className={option.value === 'none' ? 'text-sm' : 'text-3xl leading-none'}>
+                      {option.preview}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="border-t border-white/15 py-1">
+              <button
+                className="flex w-full cursor-not-allowed items-center justify-between px-5 py-2 text-left text-sm text-white/35"
+                disabled
+              >
+                <span className="flex items-center gap-3">
+                  <span className="text-lg">&lt;-&gt;</span>
+                  Modifier le niveau de liste
+                </span>
+                <ChevronDown size={16} className="-rotate-90" />
+              </button>
+              <button
+                className="flex w-full items-center gap-3 px-5 py-2 text-left text-sm text-white hover:bg-white/10"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onToggle?.()
+                  setIsOpen(false)
+                }}
+              >
+                <span className="w-5 text-center">*</span>
+                Definir une puce...
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+interface RibbonMenuOption<T extends string | number> {
+  value: T
+  label: string
+  description?: string
+  shortLabel?: string
+}
+
+function RibbonMenuButton<T extends string | number>({
+  icon,
+  label,
+  value,
+  options,
+  onSelect,
+  disabled = false,
+}: {
+  icon: ReactNode
+  label: string
+  value: T
+  options: RibbonMenuOption<T>[]
+  onSelect: (value: T) => void
+  disabled?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const selectedOption = options.find((option) => option.value === value) || options[0]
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 224)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const selectOption = (optionValue: T) => {
+    onSelect(optionValue)
+    setIsOpen(false)
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        disabled={disabled}
+        className="group flex h-12 min-w-[78px] flex-col items-center justify-center rounded-lg px-2 text-white transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+        title={`${label}: ${selectedOption?.label || ''}`}
+      >
+        <span className="flex items-center gap-1">
+          {icon}
+          <ChevronDown size={12} />
+        </span>
+        <span className="mt-1 max-w-[72px] truncate text-[10px] font-medium text-white/95">
+          {label}
+        </span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close layout menu"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-52 overflow-hidden rounded-md border border-white/20 bg-white py-1 text-gray-800 shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+            }}
+          >
+            <div className="border-b border-gray-100 px-3 py-2 text-[11px] font-bold uppercase tracking-[0.18em] text-gray-500">
+              {label}
+            </div>
+            {options.map((option) => {
+              const isSelected = option.value === value
+              return (
+                <button
+                  key={String(option.value)}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => selectOption(option.value)}
+                  className={`flex w-full items-start justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-gray-100 ${
+                    isSelected ? 'bg-gray-100 font-semibold text-gray-950' : 'text-gray-700'
+                  }`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate">{option.shortLabel || option.label}</span>
+                    {option.description && (
+                      <span className="block truncate text-[11px] font-normal text-gray-500">
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
+                  {isSelected && <span className="text-xs text-gray-500">*</span>}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
 interface RibbonButtonProps {
   icon: string | ReactNode
   label: string
@@ -994,6 +1698,90 @@ interface RibbonButtonProps {
   compact?: boolean
   disabled?: boolean
   active?: boolean
+}
+
+function LanguageMenuButton({
+  value,
+  label,
+  options,
+  onSelect,
+}: {
+  value: string
+  label: string
+  options: Array<{ value: string; label: string }>
+  onSelect: (value: string) => void
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 184)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const chooseLanguage = (language: string) => {
+    onSelect(language)
+    setIsOpen(false)
+  }
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        className="flex h-10 min-w-[116px] items-center justify-between gap-2 rounded-lg border border-white/20 bg-white/10 px-3 text-left text-[12px] font-semibold text-white outline-none hover:bg-white/20 focus:ring-2 focus:ring-white/50"
+        title={label}
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Languages size={16} className="shrink-0" />
+          <span className="truncate">{label}</span>
+        </span>
+        <ChevronDown size={14} className="shrink-0" />
+      </button>
+
+      {isOpen && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close language menu"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-44 overflow-hidden rounded-md border border-gray-200 bg-white py-1 text-sm text-gray-800 shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+            }}
+          >
+            {options.map((option) => {
+              const isSelected = normalizeEditorLanguage(option.value) === normalizeEditorLanguage(value)
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => chooseLanguage(option.value)}
+                  className={`flex h-9 w-full items-center justify-between gap-3 px-3 text-left hover:bg-blue-50 ${
+                    isSelected ? 'bg-blue-600 text-white hover:bg-blue-600' : ''
+                  }`}
+                >
+                  <span className="truncate">{option.label}</span>
+                  {isSelected && <span className="text-xs">*</span>}
+                </button>
+              )
+            })}
+          </div>
+        </>
+      )}
+    </>
+  )
 }
 
 function RibbonButton({ icon, label, onClick, compact = false, disabled = false, active = false }: RibbonButtonProps) {
@@ -1010,6 +1798,113 @@ function RibbonButton({ icon, label, onClick, compact = false, disabled = false,
       <div className="flex items-center justify-center text-white group-hover:text-white">{icon}</div>
       <span className={`mt-1 text-[10px] font-medium text-white/95 ${compact ? 'hidden' : 'block'}`}>{label}</span>
     </button>
+  )
+}
+
+function UndoHistoryButton({
+  history,
+  undoLabel = 'Undo',
+  undoHistoryLabel = 'Undo history',
+  emptyLabel = 'Aucune modification',
+  cancelLabel = 'Annuler',
+  onUndoLast,
+  onUndo,
+  disabled = false,
+}: {
+  history: string[]
+  undoLabel?: string
+  undoHistoryLabel?: string
+  emptyLabel?: string
+  cancelLabel?: string
+  onUndoLast?: () => void
+  onUndo?: (steps?: number) => void
+  disabled?: boolean
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLDivElement>(null)
+  const items = history.length > 0 ? history : [emptyLabel]
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 224)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const runUndo = (steps = 1) => {
+    onUndo?.(steps)
+    setIsOpen(false)
+  }
+
+  const runUndoLast = () => {
+    onUndoLast?.()
+    setIsOpen(false)
+  }
+
+  return (
+    <div ref={buttonRef} className="relative flex h-10 w-[58px] overflow-hidden rounded-lg border border-white/20 bg-white/10 text-white">
+      <button
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={runUndoLast}
+        disabled={disabled}
+        className="flex flex-1 items-center justify-center hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+        title={undoLabel}
+      >
+        <Undo2 size={18} />
+      </button>
+      <button
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        disabled={disabled}
+        className="flex w-5 items-center justify-center border-l border-white/20 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+        title={undoHistoryLabel}
+      >
+        <ChevronDown size={12} />
+      </button>
+
+      {isOpen && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close undo history"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-56 overflow-hidden rounded border border-white/25 bg-[#262626] py-1 text-sm text-white shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+            }}
+          >
+            {items.slice(0, 8).map((item, index) => {
+              const canUndoItem = history.length > 0
+              return (
+                <button
+                  key={`${item}-${index}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => canUndoItem && runUndo(index + 1)}
+                  disabled={!canUndoItem}
+                  className="flex w-full items-center px-2 py-1.5 text-left hover:bg-white/10 disabled:cursor-not-allowed disabled:text-white/45"
+                >
+                  <span className="truncate">{item}</span>
+                </button>
+              )
+            })}
+            <div className="my-1 h-px bg-white/15" />
+            <button
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setIsOpen(false)}
+              className="flex w-full items-center px-2 py-1.5 text-left hover:bg-white/10"
+            >
+              {cancelLabel}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
   )
 }
 

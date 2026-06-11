@@ -1,10 +1,17 @@
 import { useState, useEffect, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../store'
 import { ChevronLeft } from 'lucide-react'
-import { Document as DocxDocument, Packer, Paragraph, TextRun } from 'docx'
+import { Document as DocxDocument, Packer, PageOrientation as DocxPageOrientation, Paragraph, TextRun } from 'docx'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { getEditorLanguageSettings, getPageDimensions, getThemeForFileType } from '../utils'
+import { getPageMargins } from '../pageLayout'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
-import Ribbon, { type RibbonActions } from './Ribbon'
+import Ribbon, {
+  type BulletListValue,
+  type MultilevelListValue,
+  type RibbonActions,
+  type TextEffectValue,
+} from './Ribbon'
 import StatusBar from './StatusBar'
 import WordEditor from './editors/WordEditor'
 import PowerPointEditor from './editors/PowerPointEditor'
@@ -23,14 +30,36 @@ const getColorFallback = (value: string) =>
   value.match(/#[0-9a-fA-F]{6}\b|#[0-9a-fA-F]{3}\b/)?.[0] || '#111827'
 
 const getBaseFileName = (filename: string) => filename.replace(/\.[^/.]+$/, '') || 'document'
+const TYPING_UNDO_GROUP_MS = 1800
+
+interface UndoHistoryEntry {
+  label: string
+  steps: number
+  kind: 'typing' | 'delete' | 'paste' | 'format' | 'other'
+  text?: string
+  root?: HTMLElement
+  beforeHtml?: string
+  afterHtml?: string
+  startedAt: number
+  updatedAt: number
+}
 
 export default function EditorView({ file }: EditorViewProps) {
   const [, setIsSaving] = useState(false)
   const [rotation, setRotation] = useState(0)
-  const [isDragging, setIsDragging] = useState(false)
+  const [isPanActive, setIsPanActive] = useState(false)
+  const [isPanning, setIsPanning] = useState(false)
   const [position, setPosition] = useState({ x: 0, y: 0 })
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
+  const [undoHistory, setUndoHistory] = useState<UndoHistoryEntry[]>([])
+  const [redoHistory, setRedoHistory] = useState<UndoHistoryEntry[]>([])
   const imageContainerRef = useRef<HTMLDivElement>(null)
+  const suppressHistoryRef = useRef(false)
+  const beforeInputSnapshotRef = useRef<{
+    root: HTMLElement
+    html: string
+  } | null>(null)
+  const editableHtmlSnapshotsRef = useRef<WeakMap<HTMLElement, string>>(new WeakMap())
 
   const clearCurrentFile = useDocumentStore((state) => state.clearCurrentFile)
   const editorHtml = useDocumentStore((state) => state.editorHtml)
@@ -40,7 +69,12 @@ export default function EditorView({ file }: EditorViewProps) {
   const setTextColor = useDocumentStore((state) => state.setTextColor)
   const setTextFontFamily = useDocumentStore((state) => state.setTextFontFamily)
   const setTextFontSize = useDocumentStore((state) => state.setTextFontSize)
+  const pageOrientation = useDocumentStore((state) => state.pageOrientation)
+  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const pageSize = useDocumentStore((state) => state.pageSize)
+  const pageColumns = useDocumentStore((state) => state.pageColumns)
   const displayType = (file.originalType || file.type) as DocumentFile['type']
+  const themeColor = getThemeForFileType(displayType)
   const lastEditableRootRef = useRef<HTMLElement | null>(null)
   const lastEditableRangeRef = useRef<Range | null>(null)
 
@@ -103,8 +137,13 @@ export default function EditorView({ file }: EditorViewProps) {
       .filter(Boolean)
   }
 
+  const pxToTwips = (value: number) => Math.round(value * 15)
+  const pxToPoints = (value: number) => value * 0.75
+
   const buildDocxFromEditorHtml = async () => {
     const lines = getTextLinesFromHtml(editorHtml)
+    const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
+    const pageMargins = getPageMargins(pageMarginPreset)
     const children = lines.length > 0
       ? lines.map((line) =>
           new Paragraph({
@@ -121,6 +160,29 @@ export default function EditorView({ file }: EditorViewProps) {
     const document = new DocxDocument({
       sections: [
         {
+          properties: {
+            page: {
+              size: {
+                orientation:
+                  pageOrientation === 'landscape'
+                    ? DocxPageOrientation.LANDSCAPE
+                    : DocxPageOrientation.PORTRAIT,
+                width: pxToTwips(pageDimensions.width),
+                height: pxToTwips(pageDimensions.height),
+              },
+              margin: {
+                top: pxToTwips(pageMargins.top),
+                right: pxToTwips(pageMargins.right),
+                bottom: pxToTwips(pageMargins.bottom),
+                left: pxToTwips(pageMargins.left),
+              },
+            },
+            column: {
+              count: pageColumns,
+              equalWidth: true,
+              space: 720,
+            },
+          },
           children,
         },
       ],
@@ -153,8 +215,17 @@ export default function EditorView({ file }: EditorViewProps) {
       try {
         const doc = await PDFDocument.create()
         const font = await doc.embedFont(StandardFonts.Helvetica)
-        let currentPdfPage = doc.addPage([595.28, 841.89])
-        const margin = 40
+        const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
+        const pageMargins = getPageMargins(pageMarginPreset)
+        const pdfPageWidth = pxToPoints(pageDimensions.width)
+        const pdfPageHeight = pxToPoints(pageDimensions.height)
+        let currentPdfPage = doc.addPage([pdfPageWidth, pdfPageHeight])
+        const margins = {
+          top: pxToPoints(pageMargins.top),
+          right: pxToPoints(pageMargins.right),
+          bottom: pxToPoints(pageMargins.bottom),
+          left: pxToPoints(pageMargins.left),
+        }
         const fontSize = 11
         const lineHeight = 15
 
@@ -167,8 +238,8 @@ export default function EditorView({ file }: EditorViewProps) {
           .replace(/&lt;/g, '<')
           .replace(/&gt;/g, '>')
 
-        let y = currentPdfPage.getHeight() - margin
-        const maxWidth = currentPdfPage.getWidth() - margin * 2
+        let y = currentPdfPage.getHeight() - margins.top
+        const maxWidth = currentPdfPage.getWidth() - margins.left - margins.right
 
         const lines = plainText.split(/\r?\n/)
         for (const rawLine of lines) {
@@ -179,12 +250,12 @@ export default function EditorView({ file }: EditorViewProps) {
               fit = fit.slice(0, -1)
             }
 
-            if (y < margin) {
-              currentPdfPage = doc.addPage([595.28, 841.89])
-              y = currentPdfPage.getHeight() - margin
+            if (y < margins.bottom) {
+              currentPdfPage = doc.addPage([pdfPageWidth, pdfPageHeight])
+              y = currentPdfPage.getHeight() - margins.top
             }
 
-            currentPdfPage.drawText(fit, { x: margin, y, size: fontSize, font })
+            currentPdfPage.drawText(fit, { x: margins.left, y, size: fontSize, font })
             y -= lineHeight
             line = line.slice(fit.length)
           }
@@ -279,37 +350,35 @@ export default function EditorView({ file }: EditorViewProps) {
   // Image-specific handlers
   const handleRotateLeft = () => {
     setRotation(prev => prev - 90)
-    applyImageTransform()
   }
 
   const handleRotateRight = () => {
     setRotation(prev => prev + 90)
-    applyImageTransform()
   }
 
   const handleResetRotation = () => {
     setRotation(0)
-    applyImageTransform()
   }
 
   const handleResetPosition = () => {
     setPosition({ x: 0, y: 0 })
-    applyImageTransform()
   }
 
-  const applyImageTransform = () => {
+  useEffect(() => {
     const container = imageContainerRef.current
     if (container) {
       container.style.transform = `translate(${position.x}px, ${position.y}px) rotate(${rotation}deg)`
     }
-  }
+  }, [position, rotation])
 
   const handleTogglePan = () => {
-    setIsDragging(!isDragging)
+    setIsPanActive((active) => !active)
+    setIsPanning(false)
   }
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (!isDragging) return
+    if (!isPanActive) return
+    setIsPanning(true)
     setDragStart({
       x: e.clientX - position.x,
       y: e.clientY - position.y
@@ -317,18 +386,17 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (isDragging) {
+    if (isPanActive && isPanning) {
       const newPosition = {
         x: e.clientX - dragStart.x,
         y: e.clientY - dragStart.y
       }
       setPosition(newPosition)
-      applyImageTransform()
     }
   }
 
   const handleMouseUp = () => {
-    setIsDragging(false)
+    setIsPanning(false)
   }
 
   const getEditableRoot = () => {
@@ -336,6 +404,24 @@ export default function EditorView({ file }: EditorViewProps) {
     const anchorNode = selection?.anchorNode
     const anchorElement = anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement
     return anchorElement?.closest('[contenteditable="true"]') as HTMLElement | null
+  }
+
+  const getEditableRootFromTarget = (target: EventTarget | null) => {
+    if (!(target instanceof Node)) {
+      const savedRoot = lastEditableRootRef.current
+      if (savedRoot && document.contains(savedRoot)) return savedRoot
+
+      return document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null
+    }
+
+    const element = target instanceof HTMLElement ? target : target.parentElement
+    const root = element?.closest('[contenteditable="true"]') as HTMLElement | null
+    if (root) return root
+
+    const savedRoot = lastEditableRootRef.current
+    if (savedRoot && document.contains(savedRoot)) return savedRoot
+
+    return document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null
   }
 
   const saveEditableSelection = () => {
@@ -367,6 +453,284 @@ export default function EditorView({ file }: EditorViewProps) {
     document.addEventListener('selectionchange', saveEditableSelection)
     return () => document.removeEventListener('selectionchange', saveEditableSelection)
   }, [])
+
+  const getUndoEntry = (event: InputEvent, root: HTMLElement): UndoHistoryEntry => {
+    const data = event.data ?? ''
+    const snapshot = beforeInputSnapshotRef.current?.root === root
+      ? beforeInputSnapshotRef.current
+      : null
+    const previousHtml = editableHtmlSnapshotsRef.current.get(root)
+    const now = Date.now()
+    const snapshotFields = {
+      root,
+      beforeHtml: snapshot?.html ?? previousHtml ?? root.innerHTML,
+      afterHtml: root.innerHTML,
+      startedAt: now,
+      updatedAt: now,
+    }
+
+    if (event.inputType === 'insertText' && data) {
+      return {
+        label: 'Frappe',
+        steps: 1,
+        kind: 'typing',
+        text: data,
+        ...snapshotFields,
+      }
+    }
+    if (event.inputType === 'insertParagraph') {
+      return { label: 'Frappe paragraphe', steps: 1, kind: 'other', ...snapshotFields }
+    }
+    if (event.inputType === 'deleteContentBackward' || event.inputType === 'deleteContentForward') {
+      return { label: 'Suppression', steps: 1, kind: 'delete', ...snapshotFields }
+    }
+    if (event.inputType === 'insertFromPaste') {
+      return { label: 'Collage', steps: 1, kind: 'paste', ...snapshotFields }
+    }
+    if (event.inputType?.startsWith('format')) {
+      return { label: 'Correction automatique', steps: 1, kind: 'format', ...snapshotFields }
+    }
+    return { label: 'Modification du document', steps: 1, kind: 'other', ...snapshotFields }
+  }
+
+  useEffect(() => {
+    const rememberEditableSnapshot = (event: Event) => {
+      const root = getEditableRootFromTarget(event.target)
+      if (!root) return
+
+      editableHtmlSnapshotsRef.current.set(root, root.innerHTML)
+    }
+
+    const handleBeforeInput = (event: Event) => {
+      if (suppressHistoryRef.current) return
+
+      const root = getEditableRootFromTarget(event.target)
+      if (!root) return
+
+      beforeInputSnapshotRef.current = {
+        root,
+        html: root.innerHTML,
+      }
+    }
+
+    const handleEditableInput = (event: Event) => {
+      if (suppressHistoryRef.current) return
+
+      const root = getEditableRootFromTarget(event.target)
+      if (!root) return
+
+      const entry = getUndoEntry(event as InputEvent, root)
+      setUndoHistory((previous) => {
+        const latest = previous[0]
+
+        const isSameTypingGroup =
+          entry.kind === 'typing' &&
+          latest?.kind === 'typing' &&
+          latest.root === entry.root &&
+          entry.updatedAt - latest.startedAt <= TYPING_UNDO_GROUP_MS
+
+        if (isSameTypingGroup) {
+          const text = `${latest.text || ''}${entry.text || ''}`
+          return [
+            {
+              ...latest,
+              label: 'Frappe',
+              steps: latest.steps + entry.steps,
+              text,
+              afterHtml: entry.afterHtml,
+              updatedAt: entry.updatedAt,
+            },
+            ...previous.slice(1),
+          ].slice(0, 12)
+        }
+
+        return [entry, ...previous].slice(0, 12)
+      })
+      editableHtmlSnapshotsRef.current.set(root, root.innerHTML)
+      beforeInputSnapshotRef.current = null
+      setRedoHistory([])
+    }
+
+    document.addEventListener('focusin', rememberEditableSnapshot, true)
+    document.addEventListener('pointerdown', rememberEditableSnapshot, true)
+    document.addEventListener('beforeinput', handleBeforeInput, true)
+    document.addEventListener('input', handleEditableInput, true)
+    return () => {
+      document.removeEventListener('focusin', rememberEditableSnapshot, true)
+      document.removeEventListener('pointerdown', rememberEditableSnapshot, true)
+      document.removeEventListener('beforeinput', handleBeforeInput, true)
+      document.removeEventListener('input', handleEditableInput, true)
+    }
+  }, [])
+
+  const runDocumentHistoryCommand = (command: 'undo' | 'redo', steps = 1) => {
+    const root = restoreEditableSelection()
+    root?.focus()
+
+    suppressHistoryRef.current = true
+    for (let index = 0; index < Math.max(1, steps); index++) {
+      document.execCommand(command, false)
+    }
+    window.setTimeout(() => {
+      suppressHistoryRef.current = false
+    }, 0)
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
+  }
+
+  const restoreHistorySnapshot = (entry: UndoHistoryEntry, direction: 'undo' | 'redo') => {
+    const root = entry.root
+    const html = direction === 'undo' ? entry.beforeHtml : entry.afterHtml
+
+    if (!root || html === undefined || !document.contains(root)) return false
+
+    suppressHistoryRef.current = true
+    root.innerHTML = html
+    editableHtmlSnapshotsRef.current.set(root, html)
+    beforeInputSnapshotRef.current = null
+    root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    lastEditableRootRef.current = root
+    lastEditableRangeRef.current = null
+    window.setTimeout(() => {
+      suppressHistoryRef.current = false
+    }, 0)
+    return true
+  }
+
+  const handleUndo = (historyEntries = 1) => {
+    const moved = undoHistory.slice(0, Math.max(1, historyEntries))
+    if (moved.length === 0) return
+
+    const oldestEntry = moved[moved.length - 1]
+    const canRestoreSnapshots = moved.length > 0 && moved.every(
+      (entry) =>
+        entry.root &&
+        entry.root === oldestEntry.root &&
+        entry.beforeHtml !== undefined &&
+        document.contains(entry.root)
+    )
+
+    if (canRestoreSnapshots) {
+      restoreHistorySnapshot(oldestEntry, 'undo')
+    } else {
+      const browserSteps = moved.reduce((total, entry) => total + entry.steps, 0)
+      runDocumentHistoryCommand('undo', browserSteps || 1)
+    }
+
+    setUndoHistory((previous) => previous.slice(moved.length))
+    setRedoHistory((previous) => [...moved.reverse(), ...previous].slice(0, 12))
+  }
+
+  const handleUndoLast = () => {
+    const latest = undoHistory[0]
+    if (!latest) return
+
+    const root = latest.root && document.contains(latest.root)
+      ? latest.root
+      : restoreEditableSelection()
+
+    root?.focus()
+    suppressHistoryRef.current = true
+    document.execCommand('undo', false)
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
+
+    window.setTimeout(() => {
+      suppressHistoryRef.current = false
+    }, 0)
+
+    const nextHtml = root?.innerHTML
+    const redoEntry: UndoHistoryEntry = {
+      ...latest,
+      steps: 1,
+      beforeHtml: nextHtml ?? latest.beforeHtml,
+      afterHtml: latest.afterHtml,
+      updatedAt: Date.now(),
+    }
+
+    setUndoHistory((previous) => {
+      const [current, ...rest] = previous
+      if (!current) return rest
+
+      if (current.steps <= 1) return rest
+
+      return [
+        {
+          ...current,
+          steps: current.steps - 1,
+          afterHtml: nextHtml ?? current.afterHtml,
+          updatedAt: Date.now(),
+        },
+        ...rest,
+      ]
+    })
+    setRedoHistory((previous) => [redoEntry, ...previous].slice(0, 12))
+  }
+
+  const handleRedo = () => {
+    const [restored] = redoHistory
+    if (!restored) return
+
+    const canRestoreSnapshot = restored?.root && restored.afterHtml !== undefined && document.contains(restored.root)
+
+    if (restored && canRestoreSnapshot) {
+      restoreHistorySnapshot(restored, 'redo')
+    } else {
+      runDocumentHistoryCommand('redo', restored?.steps || 1)
+    }
+
+    setRedoHistory((previous) => previous.slice(1))
+    setUndoHistory((previous) => [restored, ...previous].slice(0, 12))
+  }
+
+  const applyLanguageToRoot = (root: HTMLElement, language: string) => {
+    const settings = getEditorLanguageSettings(language)
+
+    root.setAttribute('lang', settings.lang)
+    root.setAttribute('dir', settings.dir)
+    root.spellcheck = true
+    root.style.direction = settings.dir
+
+    return settings
+  }
+
+  const applyLanguageToSelection = (language: string) => {
+    const root = restoreEditableSelection() || document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null
+    if (!root) return
+
+    const settings = applyLanguageToRoot(root, language)
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return
+
+    const range = selection.getRangeAt(0)
+    if (range.collapsed || !root.contains(range.commonAncestorContainer)) return
+
+    const span = document.createElement('span')
+    span.setAttribute('lang', settings.lang)
+    span.setAttribute('dir', settings.dir)
+    span.style.direction = settings.dir
+    span.style.unicodeBidi = 'plaintext'
+
+    try {
+      range.surroundContents(span)
+    } catch {
+      const contents = range.extractContents()
+      span.appendChild(contents)
+      range.insertNode(span)
+    }
+
+    const nextRange = document.createRange()
+    nextRange.selectNodeContents(span)
+    selection.removeAllRanges()
+    selection.addRange(nextRange)
+    lastEditableRootRef.current = root
+    lastEditableRangeRef.current = nextRange.cloneRange()
+    root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+  }
 
   const applySelectionStyle = (style: Record<string, string>) => {
     const root = restoreEditableSelection()
@@ -414,7 +778,9 @@ export default function EditorView({ file }: EditorViewProps) {
     root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
   }
 
-  const applyInlineCommand = (command: 'bold' | 'italic' | 'underline') => {
+  const applyInlineCommand = (
+    command: 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'subscript' | 'superscript'
+  ) => {
     const root = getEditableRoot()
     if (root) {
       root.focus()
@@ -477,7 +843,7 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const applyParagraphCommand = (command: 'justifyLeft' | 'justifyCenter' | 'justifyRight' | 'justifyFull') => {
-    const root = getEditableRoot()
+    const root = restoreEditableSelection()
     if (root) {
       root.focus()
     }
@@ -485,6 +851,192 @@ export default function EditorView({ file }: EditorViewProps) {
     if (root) {
       root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
     }
+  }
+
+  const applyTextHighlight = (color: string) => {
+    const root = restoreEditableSelection()
+    if (!root) return
+
+    root.focus()
+    document.execCommand('styleWithCSS', false, 'true')
+    document.execCommand('hiliteColor', false, color)
+    root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    saveEditableSelection()
+  }
+
+  const applyTextEffect = (effect: TextEffectValue) => {
+    const effectStyles: Record<TextEffectValue, Record<string, string>> = {
+      none: {
+        textShadow: 'none',
+        webkitTextStroke: '0 transparent',
+        filter: 'none',
+      },
+      shadow: {
+        textShadow: '0 2px 4px rgba(15, 23, 42, 0.38)',
+      },
+      glow: {
+        textShadow: '0 0 5px rgba(37, 99, 235, 0.75), 0 0 12px rgba(37, 99, 235, 0.36)',
+      },
+      outline: {
+        webkitTextStroke: '0.65px currentColor',
+        textShadow: '0 0 1px currentColor',
+      },
+      lifted: {
+        textShadow: '0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 5px rgba(15, 23, 42, 0.28)',
+      },
+    }
+
+    applySelectionStyle(effectStyles[effect])
+    document.dispatchEvent(new Event('selectionchange'))
+  }
+
+  const applyListStyle = (style: MultilevelListValue) => {
+    const selection = window.getSelection()
+    const root = getEditableRoot()
+    const anchorNode = selection?.anchorNode
+    const anchorElement = anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement
+    const activeList = anchorElement?.closest('ol, ul') as HTMLOListElement | HTMLUListElement | null
+    const lists = new Set<HTMLOListElement | HTMLUListElement>()
+
+    if (activeList && root?.contains(activeList)) {
+      lists.add(activeList)
+    }
+
+    if (root && selection?.rangeCount) {
+      const range = selection.getRangeAt(0)
+      root.querySelectorAll('ol, ul').forEach((list) => {
+        if (range.intersectsNode(list)) {
+          lists.add(list as HTMLOListElement | HTMLUListElement)
+        }
+      })
+    }
+
+    lists.forEach((list) => {
+      list.classList.remove('editor-list-decimal', 'editor-list-heading', 'editor-list-legal')
+      list.classList.add(`editor-list-${style}`)
+      if (style === 'heading') {
+        list.style.listStyleType = 'upper-alpha'
+      } else if (style === 'legal') {
+        list.style.listStyleType = 'upper-roman'
+      } else {
+        list.style.listStyleType = 'decimal'
+      }
+    })
+  }
+
+  const applyBulletStyle = (style: BulletListValue) => {
+    const selection = window.getSelection()
+    const root = getEditableRoot()
+    const anchorNode = selection?.anchorNode
+    const anchorElement = anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement
+    const activeList = anchorElement?.closest('ul') as HTMLUListElement | null
+    const lists = new Set<HTMLUListElement>()
+
+    if (activeList && root?.contains(activeList)) {
+      lists.add(activeList)
+    }
+
+    if (root && selection?.rangeCount) {
+      const range = selection.getRangeAt(0)
+      root.querySelectorAll('ul').forEach((list) => {
+        if (range.intersectsNode(list)) {
+          lists.add(list as HTMLUListElement)
+        }
+      })
+    }
+
+    lists.forEach((list) => {
+      list.classList.remove(
+        'editor-bullet-disc',
+        'editor-bullet-circle',
+        'editor-bullet-square',
+        'editor-bullet-arrow',
+        'editor-bullet-check',
+        'editor-bullet-diamond',
+        'editor-bullet-plus'
+      )
+
+      if (style === 'none') return
+
+      list.classList.add(`editor-bullet-${style}`)
+      if (style === 'disc' || style === 'circle' || style === 'square') {
+        list.style.listStyleType = style
+      } else {
+        list.style.removeProperty('list-style-type')
+      }
+    })
+  }
+
+  const applyBulletCommand = (style: BulletListValue) => {
+    const root = restoreEditableSelection()
+    if (root) {
+      root.focus()
+    }
+
+    const selection = window.getSelection()
+    const anchorNode = selection?.anchorNode
+    const anchorElement = anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement
+    const activeList = anchorElement?.closest('ul') as HTMLElement | null
+
+    if (style === 'none') {
+      if (activeList && root?.contains(activeList)) {
+        document.execCommand('insertUnorderedList', false)
+      }
+    } else {
+      if (!activeList || !root?.contains(activeList)) {
+        document.execCommand('insertUnorderedList', false)
+      }
+      applyBulletStyle(style)
+    }
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
+
+    document.dispatchEvent(new Event('selectionchange'))
+    saveEditableSelection()
+  }
+
+  const applyListCommand = (
+    command: 'insertUnorderedList' | 'insertOrderedList',
+    style?: MultilevelListValue
+  ) => {
+    const root = restoreEditableSelection()
+    if (root) {
+      root.focus()
+    }
+
+    const selection = window.getSelection()
+    const anchorNode = selection?.anchorNode
+    const anchorElement = anchorNode instanceof HTMLElement ? anchorNode : anchorNode?.parentElement
+    const activeList = anchorElement?.closest('ol, ul') as HTMLElement | null
+    const canRestyleCurrentList = style && activeList?.tagName === 'OL' && root?.contains(activeList)
+
+    if (!canRestyleCurrentList) {
+      document.execCommand(command, false)
+    }
+
+    if (style) {
+      applyListStyle(style)
+    }
+
+    if (root) {
+      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    }
+
+    document.dispatchEvent(new Event('selectionchange'))
+    saveEditableSelection()
+  }
+
+  const applyPdfListCommand = (
+    kind: 'bullet' | 'number' | 'multilevel',
+    style?: BulletListValue | MultilevelListValue
+  ) => {
+    window.dispatchEvent(
+      new CustomEvent('pdf-editor-list-command', {
+        detail: { kind, style },
+      })
+    )
   }
 
   const replaceTextInEditable = (searchText: string, replacementText: string) => {
@@ -550,9 +1102,18 @@ export default function EditorView({ file }: EditorViewProps) {
     onPrint: handlePrint,
     onZoomIn: () => setZoom(Math.min(300, zoom + 10)),
     onZoomOut: () => setZoom(Math.max(10, zoom - 10)),
+    onUndoLast: handleUndoLast,
+    onUndo: handleUndo,
+    onRedo: handleRedo,
+    undoHistory: undoHistory.map((entry) => entry.label),
+    undoAvailable: undoHistory.length > 0,
+    redoAvailable: redoHistory.length > 0,
     onToggleBold: () => applyInlineCommand('bold'),
     onToggleItalic: () => applyInlineCommand('italic'),
     onToggleUnderline: () => applyInlineCommand('underline'),
+    onToggleStrikethrough: () => applyInlineCommand('strikeThrough'),
+    onToggleSubscript: () => applyInlineCommand('subscript'),
+    onToggleSuperscript: () => applyInlineCommand('superscript'),
     onAlignLeft: () => applyParagraphCommand('justifyLeft'),
     onAlignCenter: () => applyParagraphCommand('justifyCenter'),
     onAlignRight: () => applyParagraphCommand('justifyRight'),
@@ -569,10 +1130,28 @@ export default function EditorView({ file }: EditorViewProps) {
       setTextColor(isCssGradient(color) ? getColorFallback(color) : color)
       applyValueCommand('foreColor', color)
     },
+    onSetHighlight: applyTextHighlight,
+    onSetTextEffect: applyTextEffect,
+    onToggleBulletedList: () =>
+      file.type === 'pdf'
+        ? applyPdfListCommand('bullet', 'disc')
+        : applyListCommand('insertUnorderedList'),
+    onSetBulletedList: (style) =>
+      file.type === 'pdf'
+        ? applyPdfListCommand('bullet', style)
+        : applyBulletCommand(style),
+    onToggleNumberedList: () =>
+      file.type === 'pdf'
+        ? applyPdfListCommand('number', 'decimal')
+        : applyListCommand('insertOrderedList', 'decimal'),
+    onSetMultilevelList: (style) =>
+      file.type === 'pdf'
+        ? applyPdfListCommand('multilevel', style)
+        : applyListCommand('insertOrderedList', style),
     onFind: handleFind,
     onReplace: handleReplace,
     onSetTool: setActiveTool,
-    onSetLanguage: (language) => console.log('Language changed to', language),
+    onSetLanguage: applyLanguageToSelection,
     onBack: handleBack,
     onLogout: handleBack,
     // Image-specific actions
@@ -581,7 +1160,7 @@ export default function EditorView({ file }: EditorViewProps) {
     onResetRotation: file.type === 'image' ? handleResetRotation : undefined,
     onTogglePan: file.type === 'image' ? handleTogglePan : undefined,
     onResetPosition: file.type === 'image' ? handleResetPosition : undefined,
-    isPanActive: isDragging,
+    isPanActive,
   }
 
   useEffect(() => {
@@ -598,11 +1177,23 @@ export default function EditorView({ file }: EditorViewProps) {
         e.preventDefault()
         clearCurrentFile()
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          handleRedo()
+        } else {
+          handleUndo()
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault()
+        handleRedo()
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [clearCurrentFile])
+  }, [clearCurrentFile, handleRedo, handleUndo])
 
   return (
     <div className="w-full h-full flex flex-col bg-white" data-editor-shell="true">
@@ -611,7 +1202,8 @@ export default function EditorView({ file }: EditorViewProps) {
       <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
         <button
           onClick={handleBack}
-          className="flex items-center gap-2 rounded px-3 py-2 font-medium text-gray-700 transition-colors hover:bg-gray-200"
+          className="flex items-center gap-2 rounded px-3 py-2 font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+          style={{ backgroundColor: themeColor }}
           title="Back (Ctrl+O)"
         >
           <ChevronLeft size={18} />
@@ -640,7 +1232,7 @@ export default function EditorView({ file }: EditorViewProps) {
           <div 
             ref={imageContainerRef}
             style={{
-              cursor: isDragging ? 'grabbing' : 'default',
+              cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : 'default',
               transition: 'transform 0.2s ease',
               width: '100%',
               height: '100%'
