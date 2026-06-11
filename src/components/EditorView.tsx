@@ -12,6 +12,7 @@ import Ribbon, {
   type RibbonActions,
   type TextEffectValue,
 } from './Ribbon'
+import ImageEditorRibbon, { type ImageEditorRibbonActions } from './ImageEditorRibbon'
 import StatusBar from './StatusBar'
 import WordEditor from './editors/WordEditor'
 import PowerPointEditor from './editors/PowerPointEditor'
@@ -1245,26 +1246,81 @@ export default function EditorView({ file }: EditorViewProps) {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [clearCurrentFile, handleRedo, handleUndo])
 
+  const imageRibbonActions: ImageEditorRibbonActions = {
+    onSetTool: () => {
+      // Image editor handles this internally
+    },
+    activeTool: 'select',
+    onSetBrushSize: () => {},
+    onSetBrushOpacity: () => {},
+    onSetBrushColor: () => {},
+    brushSize: 6,
+    brushOpacity: 100,
+    brushColor: '#000000',
+    onSetFillColor: () => {},
+    onSetStrokeColor: () => {},
+    onSetStrokeWidth: () => {},
+    fillColor: '#ffffff',
+    strokeColor: '#000000',
+    strokeWidth: 2,
+    onZoomIn: () => {},
+    onZoomOut: () => {},
+    zoom: 100,
+    onRotateLeft: () => {},
+    onRotateRight: () => {},
+    onFlipHorizontal: () => {},
+    onFlipVertical: () => {},
+    onCrop: () => {},
+    onUndo: () => {},
+    onRedo: () => {},
+    onDeleteSelected: () => {},
+    onExport: () => {},
+  }
+
   return (
-    <div className="w-full h-full flex flex-col bg-white" data-editor-shell="true">
-      <Ribbon fileType={displayType} actions={toolbarActions} />
+    <div className="w-full h-full flex flex-col" data-editor-shell="true" style={{ backgroundColor: displayType === 'image' ? '#111827' : 'white' }}>
+      {displayType === 'image' ? (
+        <ImageEditorRibbon actions={imageRibbonActions} />
+      ) : (
+        <>
+          <Ribbon fileType={displayType} actions={toolbarActions} />
+          <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
+            <button
+              onClick={handleBack}
+              className="flex items-center gap-2 rounded px-3 py-2 font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+              style={{ backgroundColor: themeColor }}
+              title="Back (Ctrl+O)"
+            >
+              <ChevronLeft size={18} />
+              Back
+            </button>
 
-      <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs text-gray-600 shadow-sm">
-        <button
-          onClick={handleBack}
-          className="flex items-center gap-2 rounded px-3 py-2 font-medium text-white shadow-sm transition-opacity hover:opacity-90"
-          style={{ backgroundColor: themeColor }}
-          title="Back (Ctrl+O)"
-        >
-          <ChevronLeft size={18} />
-          Back
-        </button>
+            <div className="flex-1 px-2">
+              <div className="font-semibold text-gray-800">{file.name}</div>
+              <div className="text-[11px] text-gray-500">{displayType?.toUpperCase()}</div>
+            </div>
+          </div>
+        </>
+      )}
 
-        <div className="flex-1 px-2">
-          <div className="font-semibold text-gray-800">{file.name}</div>
-          <div className="text-[11px] text-gray-500">{displayType?.toUpperCase()}</div>
+      {/* Back button for images */}
+      {displayType === 'image' && (
+        <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-700 bg-gray-800 px-4 py-2 text-xs text-gray-400 shadow-sm">
+          <button
+            onClick={handleBack}
+            className="flex items-center gap-2 rounded px-3 py-2 font-medium text-white shadow-sm transition-opacity hover:opacity-90"
+            style={{ backgroundColor: '#ff9500' }}
+            title="Back"
+          >
+            <ChevronLeft size={18} />
+            Back
+          </button>
+          <div className="flex-1 px-2">
+            <div className="font-semibold text-gray-200">{file.name}</div>
+            <div className="text-[11px] text-gray-400">{displayType?.toUpperCase()}</div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Editor content */}
       <div
@@ -1295,9 +1351,12 @@ export default function EditorView({ file }: EditorViewProps) {
         {file.type === 'whiteboard' && <WhiteboardEditor file={file} />}
       </div>
 
-      <div data-print-hidden="true">
-        <StatusBar file={file} />
-      </div>
+      {displayType !== 'image' && (
+        <div data-print-hidden="true">
+          <StatusBar file={file} />
+        </div>
+      )}
     </div>
   )
 }
+
