@@ -1334,20 +1334,20 @@ export default function EditorView({ file }: EditorViewProps) {
         {file.type === 'pptx' && <PowerPointEditor file={file} />}
         {file.type === 'pdf' && <PDFEditor file={file} />}
         {file.type === 'xlsx' && <ExcelEditor file={file} />}
-        {file.type === 'image' && (
-          <div 
-            ref={imageContainerRef}
-            style={{
-              cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : 'default',
-              transition: 'transform 0.2s ease',
-              width: '100%',
-              height: '100%'
-            }}
-            onMouseDown={handleMouseDown}
-          >
-            <ImageEditor file={file} />
-          </div>
-        )}
+       {file.type === 'image' && (
+  <div 
+    ref={imageContainerRef}
+    style={{
+      cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : 'default',
+      transition: 'transform 0.2s ease',
+      width: '100%',
+      height: '100%'
+    }}
+    onMouseDown={handleMouseDown}
+  >
+    <ImageEditor file={file} />  {/* This is correct */}
+  </div>
+)}
         {file.type === 'whiteboard' && <WhiteboardEditor file={file} />}
       </div>
 

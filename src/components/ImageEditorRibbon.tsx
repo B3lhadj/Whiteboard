@@ -26,39 +26,32 @@ import {
   Layers,
 } from 'lucide-react'
 
+// Export types so they can be imported by other files
+export type ImageDrawingTool = 'select' | 'pencil' | 'highlighter' | 'text' | 'eraser' | 'eyedropper' | 'rectangle' | 'circle' | 'triangle' | 'line'
+export type ShapeType = 'rectangle' | 'circle' | 'triangle' | 'diamond' | 'line' | 'arrow'
+
 export interface ImageEditorRibbonActions {
-  // Selection & manipulation
   onSelectTool?: () => void
   onDeleteSelected?: () => void
   onDuplicateSelected?: () => void
   onCopySelected?: () => void
-  
-  // Undo/Redo
   onUndo?: () => void
   onRedo?: () => void
   undoAvailable?: boolean
   redoAvailable?: boolean
-  
-  // Image operations
   onCrop?: () => void
   onRotateLeft?: () => void
   onRotateRight?: () => void
   onFlipHorizontal?: () => void
   onFlipVertical?: () => void
-  
-  // Drawing tools
   onSetTool?: (tool: ImageDrawingTool) => void
   activeTool?: ImageDrawingTool
-  
-  // Brush settings
   onSetBrushSize?: (size: number) => void
   onSetBrushOpacity?: (opacity: number) => void
   onSetBrushColor?: (color: string) => void
   brushSize?: number
   brushOpacity?: number
   brushColor?: string
-  
-  // Shape options
   onSetShapeType?: (shape: ShapeType) => void
   onSetFillColor?: (color: string) => void
   onSetStrokeColor?: (color: string) => void
@@ -66,20 +59,13 @@ export interface ImageEditorRibbonActions {
   fillColor?: string
   strokeColor?: string
   strokeWidth?: number
-  
-  // Zoom
   onZoomIn?: () => void
   onZoomOut?: () => void
   onResetZoom?: () => void
   zoom?: number
-  
-  // Canvas
   onExport?: (format: 'png' | 'jpg' | 'pdf') => void
   onLayers?: () => void
 }
-
-export type ImageDrawingTool = 'select' | 'pencil' | 'highlighter' | 'text' | 'eraser' | 'eyedropper' | 'rectangle' | 'circle' | 'triangle' | 'line'
-export type ShapeType = 'rectangle' | 'circle' | 'triangle' | 'diamond' | 'line' | 'arrow'
 
 const BRUSH_PRESETS = [
   { name: 'Fine', size: 2, opacity: 1 },
