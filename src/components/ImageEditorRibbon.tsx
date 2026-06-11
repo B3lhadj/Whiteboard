@@ -21,10 +21,7 @@ import {
   Circle,
   Triangle,
   Minus,
-  Sliders,
-  Palette,
   ChevronDown,
-  FileImage,
   Download,
   Layers,
 } from 'lucide-react'
@@ -229,8 +226,6 @@ interface ColorPickerProps {
 }
 
 function ColorPicker({ value, onChange, label }: ColorPickerProps) {
-  const [showCustom, setShowCustom] = useState(false)
-
   return (
     <div className="flex items-center gap-1">
       <label className="text-xs font-medium text-gray-400">{label}</label>

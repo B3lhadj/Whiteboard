@@ -44,7 +44,7 @@ interface ImageEditorCanvasProps {
   strokeWidth: number
   onCanvasChange?: (canvas: HTMLCanvasElement) => void
   selectedObjectId?: string
-  onObjectSelect?: (id: string | null) => void
+  onObjectSelect?: (id: string | undefined) => void
 }
 
 export interface ImageEditorCanvasHandle {
@@ -92,7 +92,7 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
         deleteSelectedObject: () => {
           if (selectedObjectId) {
             setCanvasObjects((prev) => prev.filter((obj) => obj.id !== selectedObjectId))
-            onObjectSelect?.(null)
+            onObjectSelect?.(undefined)
             if (ctx) {
               redrawCanvas(ctx)
             }
@@ -266,7 +266,7 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
           return
         }
       }
-      onObjectSelect?.(null)
+      onObjectSelect?.(undefined)
       return
     }
 

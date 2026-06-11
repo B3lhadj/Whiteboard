@@ -19,11 +19,10 @@ export default function ImageEditor({ file }: ImageEditorProps) {
   const [strokeColor, setStrokeColor] = useState('#000000')
   const [strokeWidth, setStrokeWidth] = useState(2)
   const [zoom, setZoom] = useState(100)
-  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null)
+  const [selectedObjectId, setSelectedObjectId] = useState<string | undefined>(undefined)
 
   const canvasRef = useRef<ImageEditorCanvasHandle>(null)
   const imageRef = useRef<HTMLImageElement>(null)
-  const setEditorHtml = useDocumentStore((state) => state.setEditorHtml)
   const themeColor = getThemeForFileType(file.type)
 
   const getMimeType = (filename: string): string => {
@@ -63,10 +62,22 @@ export default function ImageEditor({ file }: ImageEditorProps) {
 
   const handleZoomIn = () => setZoom((prev) => Math.min(prev + 20, 200))
   const handleZoomOut = () => setZoom((prev) => Math.max(prev - 20, 50))
-  const handleRotateLeft = () => setRotation((prev) => (prev - 90) % 360)
-  const handleRotateRight = () => setRotation((prev) => (prev + 90) % 360)
-  const handleFlipHorizontal = () => setFlipH((prev) => !prev)
-  const handleFlipVertical = () => setFlipV((prev) => !prev)
+  const handleRotateLeft = () => {
+    // TODO: Implement rotation transformation
+    console.log('Rotate left')
+  }
+  const handleRotateRight = () => {
+    // TODO: Implement rotation transformation
+    console.log('Rotate right')
+  }
+  const handleFlipHorizontal = () => {
+    // TODO: Implement flip transformation
+    console.log('Flip horizontal')
+  }
+  const handleFlipVertical = () => {
+    // TODO: Implement flip transformation
+    console.log('Flip vertical')
+  }
 
   const handleUndo = () => {
     canvasRef.current?.undo()
@@ -81,7 +92,7 @@ export default function ImageEditor({ file }: ImageEditorProps) {
     if (!canvas) return
 
     const link = document.createElement('a')
-    let dataUrl: string
+    let dataUrl = ''
 
     if (format === 'png') {
       dataUrl = canvas.toDataURL('image/png')
@@ -95,8 +106,10 @@ export default function ImageEditor({ file }: ImageEditorProps) {
       return
     }
 
-    link.href = dataUrl
-    link.click()
+    if (dataUrl) {
+      link.href = dataUrl
+      link.click()
+    }
   }
 
   const ribbonActions: ImageEditorRibbonActions = {
@@ -153,7 +166,7 @@ export default function ImageEditor({ file }: ImageEditorProps) {
           strokeColor={strokeColor}
           strokeWidth={strokeWidth}
           selectedObjectId={selectedObjectId}
-          onObjectSelect={setSelectedObjectId}
+          onObjectSelect={(id) => setSelectedObjectId(id)}
         />
       </div>
 
