@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { getPageDimensions, calculateWordCount, calculateCharCount } from '../../utils'
+import { getPageDimensions, calculateWordCount } from '../../utils'
 import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
 import { getThemeForFileType } from '../../utils'
+import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
 
 interface WhiteboardEditorProps {
   file: DocumentFile
@@ -14,6 +15,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentScrollRef = useRef<HTMLDivElement>(null)
+  const selectedToolObjectRef = useRef<HTMLElement | null>(null)
   const themeColor = getThemeForFileType(file.type)
 
   const zoom = useDocumentStore((state) => state.zoom)
@@ -26,6 +28,11 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
   const deletePage = useDocumentStore((state) => state.deletePage)
   const movePage = useDocumentStore((state) => state.movePage)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const setActiveTool = useDocumentStore((state) => state.setActiveTool)
+  const selectedShape = useDocumentStore((state) => state.selectedShape)
+  const textColor = useDocumentStore((state) => state.textColor)
+  const textFontFamily = useDocumentStore((state) => state.textFontFamily)
+  const textFontSize = useDocumentStore((state) => state.textFontSize)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
   const pageDimensions = getPageDimensions('docx', pageOrientation)
 
@@ -53,8 +60,222 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     }
   }
 
+  const syncWhiteboardState = () => {
+    if (!editorRef.current) return
+
+    const html = editorRef.current.innerHTML
+    const text = editorRef.current.innerText || ''
+    const newContent = { ...pageContent, [currentPage]: html }
+    setPageContent(newContent)
+    setWordCount(calculateWordCount(text))
+    setCharCount(text.length)
+    setEditorHtml(html)
+  }
+
+  const getEditorPoint = (event: React.PointerEvent<HTMLDivElement>) => {
+    const container = editorRef.current
+    if (!container) return { x: 24, y: 24 }
+    const rect = container.getBoundingClientRect()
+    const scale = (zoom * 1.12) / 100 || 1
+    return {
+      x: Math.max(0, (event.clientX - rect.left) / scale),
+      y: Math.max(0, (event.clientY - rect.top) / scale),
+    }
+  }
+
+  const createWhiteboardObject = (
+    className: string,
+    x: number,
+    y: number,
+    html = '',
+    size?: { width: number; height: number }
+  ) => {
+    const container = editorRef.current
+    if (!container) return null
+
+    const element = document.createElement('div')
+    element.className = `word-tool-object ${className}`
+    element.style.left = `${x}px`
+    element.style.top = `${y}px`
+    if (size) {
+      element.style.width = `${size.width}px`
+      element.style.height = `${size.height}px`
+    }
+    element.innerHTML = html
+    container.appendChild(element)
+    syncWhiteboardState()
+    return element
+  }
+
+  const selectToolObject = (object: HTMLElement | null) => {
+    selectedToolObjectRef.current?.classList.remove('is-selected')
+    selectedToolObjectRef.current = object
+    object?.classList.add('is-selected')
+  }
+
+  const shapeMarkup = (svg: string) =>
+    `${svg}<span class="word-rotate-handle" contenteditable="false"></span><span class="word-resize-handle" contenteditable="false"></span>`
+
+  const setShapeMarkup = (object: HTMLElement, shape: ShapeKind, color: string, fill: string) => {
+    object.innerHTML = shapeMarkup(
+      getShapeSvg(shape, {
+        width: Math.max(1, object.offsetWidth),
+        height: Math.max(1, object.offsetHeight),
+        stroke: color,
+        fill,
+      })
+    )
+  }
+
+  const beginResizeObject = (event: React.PointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    event.preventDefault()
+    event.stopPropagation()
+    selectToolObject(object)
+
+    const startX = event.clientX
+    const startY = event.clientY
+    const initialWidth = object.offsetWidth
+    const initialHeight = object.offsetHeight
+    const scale = (zoom * 1.12) / 100 || 1
+
+    const resize = (moveEvent: PointerEvent) => {
+      const nextWidth = Math.max(36, initialWidth + (moveEvent.clientX - startX) / scale)
+      const nextHeight = Math.max(24, initialHeight + (moveEvent.clientY - startY) / scale)
+      object.style.width = `${nextWidth}px`
+      object.style.height = `${nextHeight}px`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', resize)
+      window.removeEventListener('pointerup', stop)
+      syncWhiteboardState()
+    }
+
+    window.addEventListener('pointermove', resize)
+    window.addEventListener('pointerup', stop)
+  }
+
+  const beginMoveObject = (event: React.PointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    selectToolObject(object)
+
+    event.preventDefault()
+    const startX = event.clientX
+    const startY = event.clientY
+    const initialLeft = parseFloat(object.style.left || '0')
+    const initialTop = parseFloat(object.style.top || '0')
+    const scale = (zoom * 1.12) / 100 || 1
+
+    const move = (moveEvent: PointerEvent) => {
+      object.style.left = `${initialLeft + (moveEvent.clientX - startX) / scale}px`
+      object.style.top = `${initialTop + (moveEvent.clientY - startY) / scale}px`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      syncWhiteboardState()
+    }
+
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+
+  const beginRotateObject = (event: React.PointerEvent<HTMLDivElement>, object: HTMLElement) => {
+    event.preventDefault()
+    event.stopPropagation()
+    selectToolObject(object)
+
+    const rect = object.getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
+    const centerY = rect.top + rect.height / 2
+    const initialRotation = parseFloat(object.dataset.rotation || '0')
+    const startAngle = Math.atan2(event.clientY - centerY, event.clientX - centerX)
+
+    const rotate = (moveEvent: PointerEvent) => {
+      const currentAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX)
+      const delta = ((currentAngle - startAngle) * 180) / Math.PI
+      const nextRotation = Math.round(initialRotation + delta)
+      object.dataset.rotation = String(nextRotation)
+      object.style.transform = `rotate(${nextRotation}deg)`
+    }
+
+    const stop = () => {
+      window.removeEventListener('pointermove', rotate)
+      window.removeEventListener('pointerup', stop)
+      syncWhiteboardState()
+    }
+
+    window.addEventListener('pointermove', rotate)
+    window.addEventListener('pointerup', stop)
+  }
+
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement
+    const selectedObject = target.closest('.word-tool-object') as HTMLElement | null
+    const rotateObject = target.closest('.word-rotate-handle')?.closest('.word-tool-object') as HTMLElement | null
+    const resizeObject = target.closest('.word-resize-handle')?.closest('.word-tool-object') as HTMLElement | null
+
+    if (rotateObject) {
+      beginRotateObject(event, rotateObject)
+      return
+    }
+
+    if (resizeObject) {
+      beginResizeObject(event, resizeObject)
+      return
+    }
+
+    if (activeTool === 'select') {
+      if (selectedObject) beginMoveObject(event, selectedObject)
+      return
+    }
+
+    if (selectedObject && activeTool !== 'erase') {
+      beginMoveObject(event, selectedObject)
+      return
+    }
+
+    if (activeTool === 'erase') {
+      event.preventDefault()
+      selectedObject?.remove()
+      syncWhiteboardState()
+      return
+    }
+
+    if (activeTool === 'shape') {
+      event.preventDefault()
+      const point = getEditorPoint(event)
+      const shapeSize = getShapeSize(selectedShape)
+      const shapeObject = createWhiteboardObject(
+        'word-shape-object',
+        point.x,
+        point.y,
+        shapeMarkup(getShapeSvg(selectedShape, { stroke: textColor, fill: 'rgba(124, 58, 237, 0.08)' })),
+        shapeSize
+      )
+      if (shapeObject) {
+        shapeObject.dataset.shapeKind = selectedShape
+        selectToolObject(shapeObject)
+      }
+      setActiveTool('select')
+      return
+    }
+
+    if (activeTool === 'text' && !target.closest('.word-textbox-object')) {
+      event.preventDefault()
+      const point = getEditorPoint(event)
+      const textBox = createWhiteboardObject(
+        'word-textbox-object',
+        point.x,
+        point.y,
+        `<div contenteditable="true" spellcheck="true" style="color: ${textColor}; font-family: ${textFontFamily}; font-size: ${textFontSize}px;">Text box</div>`
+      )
+      const editable = textBox?.querySelector('[contenteditable="true"]') as HTMLElement | null
+      editable?.focus()
+    }
+  }
+
   const handleAddPage = () => {
-    const newPage = { id: String(Date.now()), content: '' }
     const newContent = { ...pageContent, [Object.keys(pageContent).length + 1]: '' }
     setPageContent(newContent)
     addPage()
@@ -72,7 +293,21 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     movePage(index, direction)
   }
 
-  const pageCount = file.wordPages?.length || 1
+  useEffect(() => {
+    const handleShapeColorChange = (event: Event) => {
+      const color = (event as CustomEvent<{ color?: string }>).detail?.color
+      const object = selectedToolObjectRef.current
+      if (!color || !object || !document.contains(object) || !object.classList.contains('word-shape-object')) return
+
+      const shape = (object.dataset.shapeKind || 'rectangle') as ShapeKind
+      setShapeMarkup(object, shape, color, 'rgba(124, 58, 237, 0.08)')
+      syncWhiteboardState()
+    }
+
+    window.addEventListener('editor-shape-color-change', handleShapeColorChange)
+    return () => window.removeEventListener('editor-shape-color-change', handleShapeColorChange)
+  }, [pageContent, currentPage])
+
   const totalPages = Object.keys(pageContent).length || 1
   const safeCurrentPage = Math.max(1, Math.min(currentPage, totalPages))
 
@@ -108,7 +343,11 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
             suppressContentEditableWarning
             className={`whiteboard-editor-root relative bg-white p-8 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-offset-2 ${activeTool === 'text'
                 ? 'cursor-text'
-                : 'cursor-text'
+                : activeTool === 'draw' || activeTool === 'shape' || activeTool === 'image'
+                  ? 'cursor-crosshair'
+                  : activeTool === 'erase'
+                    ? 'cursor-not-allowed'
+                    : 'cursor-text'
               }`}
             style={{
               transform: `scale(${(zoom * 1.12) / 100})`,
@@ -122,6 +361,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
               border: '1px solid #e5e7eb',
               boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
             }}
+            onPointerDown={handlePointerDown}
             onInput={handleInput}
           />
         </div>

@@ -31,6 +31,7 @@ const getColorFallback = (value: string) =>
 
 const getBaseFileName = (filename: string) => filename.replace(/\.[^/.]+$/, '') || 'document'
 const TYPING_UNDO_GROUP_MS = 1800
+type LetterCaseMode = 'upper' | 'lower'
 
 interface UndoHistoryEntry {
   label: string
@@ -66,6 +67,7 @@ export default function EditorView({ file }: EditorViewProps) {
   const zoom = useDocumentStore((state) => state.zoom)
   const setZoom = useDocumentStore((state) => state.setZoom)
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
+  const setSelectedShape = useDocumentStore((state) => state.setSelectedShape)
   const setTextColor = useDocumentStore((state) => state.setTextColor)
   const setTextFontFamily = useDocumentStore((state) => state.setTextFontFamily)
   const setTextFontSize = useDocumentStore((state) => state.setTextFontSize)
@@ -778,6 +780,37 @@ export default function EditorView({ file }: EditorViewProps) {
     root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
   }
 
+  const transformTextCase = (text: string, mode: LetterCaseMode) =>
+    mode === 'upper' ? text.toLocaleUpperCase() : text.toLocaleLowerCase()
+
+  const applyCaseToEditableSelection = (mode: LetterCaseMode) => {
+    const root = restoreEditableSelection()
+    if (!root) return false
+
+    root.focus()
+    const selection = window.getSelection()
+    if (!selection || selection.rangeCount === 0) return false
+
+    const range = selection.getRangeAt(0)
+    if (!root.contains(range.commonAncestorContainer) || range.collapsed) return false
+
+    const selectedText = range.toString()
+    if (!selectedText) return false
+
+    const replacement = document.createTextNode(transformTextCase(selectedText, mode))
+    range.deleteContents()
+    range.insertNode(replacement)
+
+    const nextRange = document.createRange()
+    nextRange.selectNodeContents(replacement)
+    selection.removeAllRanges()
+    selection.addRange(nextRange)
+    lastEditableRootRef.current = root
+    lastEditableRangeRef.current = nextRange.cloneRange()
+    root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
+    return true
+  }
+
   const applyInlineCommand = (
     command: 'bold' | 'italic' | 'underline' | 'strikeThrough' | 'subscript' | 'superscript'
   ) => {
@@ -1039,6 +1072,15 @@ export default function EditorView({ file }: EditorViewProps) {
     )
   }
 
+  const applyCaseCommand = (mode: LetterCaseMode) => {
+    window.dispatchEvent(
+      new CustomEvent('editor-change-case', {
+        detail: { mode },
+      })
+    )
+    applyCaseToEditableSelection(mode)
+  }
+
   const replaceTextInEditable = (searchText: string, replacementText: string) => {
     const root = getEditableRoot()
     if (!root) return false
@@ -1114,6 +1156,7 @@ export default function EditorView({ file }: EditorViewProps) {
     onToggleStrikethrough: () => applyInlineCommand('strikeThrough'),
     onToggleSubscript: () => applyInlineCommand('subscript'),
     onToggleSuperscript: () => applyInlineCommand('superscript'),
+    onChangeCase: applyCaseCommand,
     onAlignLeft: () => applyParagraphCommand('justifyLeft'),
     onAlignCenter: () => applyParagraphCommand('justifyCenter'),
     onAlignRight: () => applyParagraphCommand('justifyRight'),
@@ -1127,7 +1170,13 @@ export default function EditorView({ file }: EditorViewProps) {
       applySelectionStyle({ fontSize: `${size}px` })
     },
     onSetColor: (color) => {
-      setTextColor(isCssGradient(color) ? getColorFallback(color) : color)
+      const nextColor = isCssGradient(color) ? getColorFallback(color) : color
+      setTextColor(nextColor)
+      window.dispatchEvent(
+        new CustomEvent('editor-shape-color-change', {
+          detail: { color: nextColor },
+        })
+      )
       applyValueCommand('foreColor', color)
     },
     onSetHighlight: applyTextHighlight,
@@ -1151,6 +1200,7 @@ export default function EditorView({ file }: EditorViewProps) {
     onFind: handleFind,
     onReplace: handleReplace,
     onSetTool: setActiveTool,
+    onSetShape: setSelectedShape,
     onSetLanguage: applyLanguageToSelection,
     onBack: handleBack,
     onLogout: handleBack,

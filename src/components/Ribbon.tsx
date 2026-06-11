@@ -20,7 +20,6 @@ import {
   FolderOpen,
   Download,
   MousePointer2,
-  Square,
   Image,
   PenTool,
   Type,
@@ -64,6 +63,7 @@ import {
   type PageOrientation,
   type PageSizePreset,
 } from '../pageLayout'
+import { SHAPE_OPTIONS, getShapeSvg, type ShapeKind } from '../shapes'
 
 export interface RibbonActions {
   onSave?: () => void | Promise<void>
@@ -85,6 +85,7 @@ export interface RibbonActions {
   onToggleStrikethrough?: () => void
   onToggleSubscript?: () => void
   onToggleSuperscript?: () => void
+  onChangeCase?: (mode: 'upper' | 'lower') => void
   onAlignLeft?: () => void
   onAlignCenter?: () => void
   onAlignRight?: () => void
@@ -101,6 +102,7 @@ export interface RibbonActions {
   onFind?: () => void
   onReplace?: () => void
   onSetTool?: (tool: 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase') => void
+  onSetShape?: (shape: ShapeKind) => void
   onSetLanguage?: (language: string) => void
   onBack?: () => void
   onLogout?: () => void
@@ -188,6 +190,8 @@ const RIBBON_TRANSLATIONS: Record<string, Record<string, string>> = {
     Strikethrough: 'Barre',
     Subscript: 'Indice',
     Superscript: 'Exposant',
+    Uppercase: 'Majuscules',
+    Lowercase: 'Minuscules',
     Left: 'Gauche',
     Center: 'Centre',
     Right: 'Droite',
@@ -250,6 +254,8 @@ const RIBBON_TRANSLATIONS: Record<string, Record<string, string>> = {
     Strikethrough: 'Tachado',
     Subscript: 'Subindice',
     Superscript: 'Superindice',
+    Uppercase: 'Mayusculas',
+    Lowercase: 'Minusculas',
     Left: 'Izquierda',
     Center: 'Centro',
     Right: 'Derecha',
@@ -312,6 +318,8 @@ const RIBBON_TRANSLATIONS: Record<string, Record<string, string>> = {
     Strikethrough: 'مشطوب',
     Subscript: 'منخفض',
     Superscript: 'مرتفع',
+    Uppercase: 'احرف كبيرة',
+    Lowercase: 'احرف صغيرة',
     Left: 'يسار',
     Center: 'وسط',
     Right: 'يمين',
@@ -374,11 +382,14 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
   const darkMode = useDocumentStore((state) => state.darkMode)
   const activeTool = useDocumentStore((state) => state.activeTool)
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
+  const selectedShape = useDocumentStore((state) => state.selectedShape)
+  const setSelectedShape = useDocumentStore((state) => state.setSelectedShape)
   const selectedLanguage = useDocumentStore((state) => state.selectedLanguage)
   const setSelectedLanguage = useDocumentStore((state) => state.setSelectedLanguage)
   const toolbarLanguage = normalizeEditorLanguage(selectedLanguage)
   const toolbarLanguageSettings = getEditorLanguageSettings(toolbarLanguage)
   const t = (label: string) => translateRibbon(toolbarLanguage, label)
+  const canInsertShapes = fileType !== 'xlsx' && fileType !== 'image'
 
   const themeColor = themeColorOverride || (fileType
     ? getThemeForFileType(fileType as any)
@@ -514,7 +525,18 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
 
         <RibbonGroup label={t('Tools')}>
           <RibbonButton icon={<MousePointer2 size={18} />} label={t('Select')} active={activeTool === 'select'} onClick={() => { setActiveTool('select'); actions?.onSetTool?.('select') }} />
-          <RibbonButton icon={<Square size={18} />} label={t('Shape')} active={activeTool === 'shape'} onClick={() => { setActiveTool('shape'); actions?.onSetTool?.('shape') }} />
+          <ShapeGalleryButton
+            label={t('Shape')}
+            value={selectedShape}
+            disabled={!canInsertShapes}
+            active={activeTool === 'shape'}
+            themeColor={themeColor}
+            onSelect={(shape) => {
+              setSelectedShape(shape)
+              actions?.onSetShape?.(shape)
+              actions?.onSetTool?.(shape === 'text-box' ? 'text' : 'shape')
+            }}
+          />
           <RibbonButton icon={<Image size={18} />} label={t('Image')} active={activeTool === 'image'} onClick={() => { setActiveTool('image'); actions?.onSetTool?.('image') }} />
           <RibbonButton icon={<PenTool size={18} />} label={t('Draw')} active={activeTool === 'draw'} onClick={() => { setActiveTool('draw'); actions?.onSetTool?.('draw') }} />
           <RibbonButton icon={<Type size={18} />} label={t('Text')} active={activeTool === 'text'} onClick={() => { setActiveTool('text'); actions?.onSetTool?.('text') }} />
@@ -553,6 +575,8 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
             <RibbonButton icon={<Strikethrough size={16} />} label={t('Strikethrough')} compact active={formatState.strikeThrough} onClick={actions?.onToggleStrikethrough} disabled={!actions?.onToggleStrikethrough} />
             <RibbonButton icon={<Subscript size={16} />} label={t('Subscript')} compact active={formatState.subscript} onClick={actions?.onToggleSubscript} disabled={!actions?.onToggleSubscript} />
             <RibbonButton icon={<Superscript size={16} />} label={t('Superscript')} compact active={formatState.superscript} onClick={actions?.onToggleSuperscript} disabled={!actions?.onToggleSuperscript} />
+            <RibbonButton icon={<span className="text-[12px] font-bold leading-none">AA</span>} label={t('Uppercase')} compact onClick={() => actions?.onChangeCase?.('upper')} disabled={!actions?.onChangeCase} />
+            <RibbonButton icon={<span className="text-[12px] font-bold leading-none">aa</span>} label={t('Lowercase')} compact onClick={() => actions?.onChangeCase?.('lower')} disabled={!actions?.onChangeCase} />
           </div>
           <div className="mt-1 flex items-center gap-1">
             <RibbonButton icon={<AlignLeft size={16} />} label={t('Left')} compact onClick={actions?.onAlignLeft} disabled={!actions?.onAlignLeft} />
@@ -1577,6 +1601,131 @@ function BulletLibraryMenuButton({
                 Definir une puce...
               </button>
             </div>
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
+function ShapeGalleryButton({
+  label,
+  value,
+  onSelect,
+  disabled = false,
+  active = false,
+  themeColor = '#217346',
+}: {
+  label: string
+  value: ShapeKind
+  onSelect: (shape: ShapeKind) => void
+  disabled?: boolean
+  active?: boolean
+  themeColor?: string
+}) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const openMenu = () => {
+    const rect = buttonRef.current?.getBoundingClientRect()
+    setMenuPosition({
+      left: Math.max(8, Math.min(rect?.left || 0, window.innerWidth - 392)),
+      top: (rect?.bottom || 0) + 6,
+    })
+    setIsOpen((current) => !current)
+  }
+
+  const selectShape = (shape: ShapeKind) => {
+    onSelect(shape)
+    setIsOpen(false)
+  }
+
+  const renderSection = (title: string, group: 'recent' | 'lines') => (
+    <div className="border-b border-white/20 pb-2 last:border-b-0 last:pb-1">
+      <div className="px-3 pb-1.5 pt-2.5 text-[12px] font-semibold text-white">
+        {title}
+      </div>
+      <div className="grid grid-cols-12 gap-0.5 px-2">
+        {SHAPE_OPTIONS.filter((option) => option.group === group).map((option, index) => {
+          const isSelected = option.value === value
+          return (
+            <button
+              key={`${group}-${option.value}-${index}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectShape(option.value)}
+              className={`flex h-6 w-7 items-center justify-center rounded-[2px] border transition-colors hover:border-white hover:bg-white/20 ${
+                isSelected ? 'border-white bg-white/25' : 'border-transparent'
+              }`}
+              title={option.label}
+              aria-label={option.label}
+            >
+              <span
+                className="block h-5 w-6 text-white"
+                dangerouslySetInnerHTML={{
+                  __html: getShapeSvg(option.value, {
+                    width: 44,
+                    height: 30,
+                    stroke: '#ffffff',
+                    strokeWidth: 2.6,
+                    fill: 'transparent',
+                  }),
+                }}
+              />
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={openMenu}
+        disabled={disabled}
+        className={`group relative flex h-10 w-12 flex-col items-center justify-center rounded-lg px-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+          active ? 'bg-white/20 shadow-inner' : 'hover:bg-white/15 active:bg-white/20'
+        }`}
+        title={disabled ? `${label} disabled for Excel` : label}
+      >
+        <span
+          className="flex h-5 w-7 items-center justify-center text-white"
+          dangerouslySetInnerHTML={{
+            __html: getShapeSvg(value, {
+              width: 48,
+              height: 32,
+              stroke: '#ffffff',
+              strokeWidth: 2.8,
+              fill: 'transparent',
+            }),
+          }}
+        />
+        <span className="mt-1 flex max-w-[48px] items-center gap-0.5 truncate text-[10px] font-medium text-white/95">
+          {label}
+          <ChevronDown size={10} className="shrink-0" />
+        </span>
+      </button>
+
+      {isOpen && !disabled && (
+        <>
+          <button
+            className="fixed inset-0 z-40 cursor-default"
+            aria-label="Close shapes menu"
+            onClick={() => setIsOpen(false)}
+          />
+          <div
+            className="fixed z-50 w-[374px] max-w-[calc(100vw-16px)] overflow-hidden rounded-[2px] border border-white/25 pb-1 text-white shadow-2xl"
+            style={{
+              left: menuPosition.left,
+              top: menuPosition.top,
+              backgroundColor: themeColor,
+            }}
+          >
+            {renderSection('Formes recemment utilisees', 'recent')}
+            {renderSection('Traits', 'lines')}
           </div>
         </>
       )}

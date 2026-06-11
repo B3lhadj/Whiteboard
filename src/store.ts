@@ -8,6 +8,7 @@ import {
   type PageOrientation,
   type PageSizePreset,
 } from './pageLayout'
+import type { ShapeKind } from './shapes'
 
 export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | 'whiteboard' | null
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
@@ -53,6 +54,7 @@ export interface DocumentState {
   charCount: number
   editorHtml: string
   activeTool: ToolbarTool
+  selectedShape: ShapeKind
   textColor: string
   textFontFamily: string
   textFontSize: number
@@ -75,6 +77,7 @@ export interface DocumentState {
   setCharCount: (count: number) => void
   setEditorHtml: (html: string) => void
   setActiveTool: (tool: ToolbarTool) => void
+  setSelectedShape: (shape: ShapeKind) => void
   setTextColor: (color: string) => void
   setTextFontFamily: (font: string) => void
   setTextFontSize: (size: number) => void
@@ -119,6 +122,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   charCount: 0,
   editorHtml: '',
   activeTool: 'select',
+  selectedShape: 'rectangle',
   textColor: '#111827',
   textFontFamily: 'Calibri',
   textFontSize: 16,
@@ -183,6 +187,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setEditorHtml: (html) => set({ editorHtml: html }),
 
   setActiveTool: (tool) => set({ activeTool: tool }),
+  setSelectedShape: (shape) => set({ selectedShape: shape, activeTool: shape === 'text-box' ? 'text' : 'shape' }),
 
   setTextColor: (color) => set({ textColor: color }),
 
@@ -207,6 +212,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       charCount: 0,
       editorHtml: '',
       activeTool: 'select',
+      selectedShape: 'rectangle',
       zoom: 100,
     })
   },

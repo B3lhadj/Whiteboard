@@ -7,7 +7,7 @@ import { showErrorToast } from '../../utils/toast'
 import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
-import { getThemeForFileType } from '../../utils'
+import { getShapeSvg, type ShapeKind } from '../../shapes'
 
 interface PDFEditorProps {
   file: DocumentFile
@@ -16,8 +16,12 @@ interface PDFEditorProps {
 interface PdfAnnotation {
   id: string
   page: number
+  kind: 'text' | 'shape'
   xRatio: number
   yRatio: number
+  widthRatio?: number
+  heightRatio?: number
+  shape?: ShapeKind
   text: string
   fontSize: number
   fontFamily: string
@@ -28,6 +32,8 @@ type PdfListCommandDetail = {
   kind: 'bullet' | 'number' | 'multilevel'
   style?: string
 }
+
+type LetterCaseMode = 'upper' | 'lower'
 
 const PDF_BULLET_MARKERS: Record<string, string> = {
   disc: '\u2022',
@@ -99,13 +105,13 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null)
   const renderTaskRef = useRef<any>(null)
   const lastToolbarFormatRef = useRef({ textColor: '', textFontFamily: '', textFontSize: 0 })
-  const themeColor = getThemeForFileType(file.type)
 
   const currentFile = useDocumentStore((state) => state.currentFile)
   const currentPage = useDocumentStore((state) => state.currentPage)
   const setCurrentPage = useDocumentStore((state) => state.setCurrentPage)
   const zoom = useDocumentStore((state) => state.zoom)
   const activeTool = useDocumentStore((state) => state.activeTool)
+  const selectedShape = useDocumentStore((state) => state.selectedShape)
   const textColor = useDocumentStore((state) => state.textColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
@@ -352,7 +358,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   ])
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if ((!isAddTextMode && activeTool !== 'text') || !canvasRef.current) return
+    if ((!isAddTextMode && activeTool !== 'text' && activeTool !== 'shape') || !canvasRef.current) return
 
     const rect = canvasRef.current.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return
@@ -366,12 +372,17 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     const xRatio = Math.min(Math.max(x / contentWidth, 0), 1)
     const yRatio = Math.min(Math.max(y / contentHeight, 0), 1)
 
+    const annotationKind = activeTool === 'shape' ? 'shape' : 'text'
     const newAnnotation: PdfAnnotation = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       page: currentPage,
+      kind: annotationKind,
       xRatio,
       yRatio,
-      text: 'Edit me',
+      widthRatio: annotationKind === 'shape' ? Math.min(160 / contentWidth, 0.28) : undefined,
+      heightRatio: annotationKind === 'shape' ? Math.min(96 / contentHeight, 0.18) : undefined,
+      shape: annotationKind === 'shape' ? selectedShape : undefined,
+      text: annotationKind === 'shape' ? '' : 'Edit me',
       fontSize: textFontSize,
       fontFamily: textFontFamily,
       color: textColor,
@@ -462,6 +473,56 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     return () => window.removeEventListener('pdf-editor-list-command', handleListCommand)
   }, [selectedAnnotationId])
 
+  useEffect(() => {
+    const transformText = (text: string, mode: LetterCaseMode) =>
+      mode === 'upper' ? text.toLocaleUpperCase() : text.toLocaleLowerCase()
+
+    const handleChangeCase = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: LetterCaseMode }>).detail?.mode
+      if (!mode) return
+
+      const activeTextarea =
+        document.activeElement instanceof HTMLTextAreaElement
+          ? document.activeElement
+          : null
+      const targetId = activeTextarea?.dataset.pdfAnnotationId || selectedAnnotationId
+      if (!targetId) return
+
+      const selectionStart = activeTextarea?.dataset.pdfAnnotationId === targetId
+        ? activeTextarea.selectionStart
+        : null
+      const selectionEnd = activeTextarea?.dataset.pdfAnnotationId === targetId
+        ? activeTextarea.selectionEnd
+        : null
+
+      setAnnotations((previous) =>
+        previous.map((annotation) => {
+          if (annotation.id !== targetId || annotation.kind === 'shape') return annotation
+
+          const hasSelection =
+            selectionStart !== null &&
+            selectionEnd !== null &&
+            selectionStart !== selectionEnd
+
+          if (!hasSelection) {
+            return { ...annotation, text: transformText(annotation.text, mode) }
+          }
+
+          const start = selectionStart ?? 0
+          const end = selectionEnd ?? start
+          return {
+            ...annotation,
+            text: `${annotation.text.slice(0, start)}${transformText(annotation.text.slice(start, end), mode)}${annotation.text.slice(end)}`,
+          }
+        })
+      )
+      setSelectedAnnotationId(targetId)
+    }
+
+    window.addEventListener('editor-change-case', handleChangeCase)
+    return () => window.removeEventListener('editor-change-case', handleChangeCase)
+  }, [selectedAnnotationId])
+
   const removeAnnotation = (id: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== id))
     if (selectedAnnotationId === id) {
@@ -488,6 +549,70 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       return StandardFonts.Courier
     }
     return StandardFonts.Helvetica
+  }
+
+  const drawPdfShape = (page: any, annotation: PdfAnnotation) => {
+    const { width, height } = page.getSize()
+    const color = hexToRgb(annotation.color)
+    const strokeColor = rgb(color.r, color.g, color.b)
+    const x = annotation.xRatio * width
+    const topY = height - annotation.yRatio * height
+    const shapeWidth = (annotation.widthRatio || 0.22) * width
+    const shapeHeight = (annotation.heightRatio || 0.12) * height
+    const y = topY - shapeHeight
+    const shape = annotation.shape || 'rectangle'
+    const drawLine = (x1: number, y1: number, x2: number, y2: number) =>
+      page.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, thickness: 2, color: strokeColor })
+    const drawArrowHead = (tipX: number, tipY: number, fromX: number, fromY: number) => {
+      const angle = Math.atan2(tipY - fromY, tipX - fromX)
+      const size = 10
+      drawLine(tipX, tipY, tipX - size * Math.cos(angle - Math.PI / 6), tipY - size * Math.sin(angle - Math.PI / 6))
+      drawLine(tipX, tipY, tipX - size * Math.cos(angle + Math.PI / 6), tipY - size * Math.sin(angle + Math.PI / 6))
+    }
+
+    if (shape === 'line' || shape === 'arrow' || shape === 'double-arrow') {
+      drawLine(x, y, x + shapeWidth, y + shapeHeight)
+      if (shape === 'arrow' || shape === 'double-arrow') drawArrowHead(x + shapeWidth, y + shapeHeight, x, y)
+      if (shape === 'double-arrow') drawArrowHead(x, y, x + shapeWidth, y + shapeHeight)
+      return
+    }
+
+    if (shape === 'oval') {
+      page.drawEllipse({
+        x: x + shapeWidth / 2,
+        y: y + shapeHeight / 2,
+        xScale: shapeWidth / 2,
+        yScale: shapeHeight / 2,
+        borderColor: strokeColor,
+        borderWidth: 2,
+        color: rgb(0.93, 0.96, 1),
+      })
+      return
+    }
+
+    if (shape === 'triangle') {
+      drawLine(x + shapeWidth / 2, y + shapeHeight, x + shapeWidth, y)
+      drawLine(x + shapeWidth, y, x, y)
+      drawLine(x, y, x + shapeWidth / 2, y + shapeHeight)
+      return
+    }
+
+    if (shape === 'elbow' || shape === 'elbow-arrow') {
+      drawLine(x, y + shapeHeight, x, y)
+      drawLine(x, y, x + shapeWidth, y)
+      if (shape === 'elbow-arrow') drawArrowHead(x + shapeWidth, y, x, y)
+      return
+    }
+
+    page.drawRectangle({
+      x,
+      y,
+      width: shapeWidth,
+      height: shapeHeight,
+      borderColor: strokeColor,
+      borderWidth: 2,
+      color: rgb(0.93, 0.96, 1),
+    })
   }
 
   const handleExportEditedPdf = async () => {
@@ -524,6 +649,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         const relevantAnnotations = annotations.filter((a) => a.page === posInNewDoc)
 
         for (const annotation of relevantAnnotations) {
+          if (annotation.kind === 'shape') {
+            drawPdfShape(page, annotation)
+            continue
+          }
           if (!annotation.text.trim()) continue
           const { width, height } = page.getSize()
           const x = annotation.xRatio * width
@@ -715,66 +844,98 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                   }}
                 />
 
-                {pageAnnotations.map((annotation) => (
-                  <textarea
-                    key={annotation.id}
-                    data-pdf-annotation-id={annotation.id}
-                    value={annotation.text}
-                    onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
-                    onFocus={() => setSelectedAnnotationId(annotation.id)}
-                    rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
-                    className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
-                      selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
-                    }`}
-                    style={{
-                      left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
-                      top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
-                      fontSize: `${annotation.fontSize}px`,
-                      fontFamily: annotation.fontFamily,
-                      color: annotation.color,
-                      transform: 'translateY(-100%)',
-                      lineHeight: 1.25,
-                    }}
-                  />
-                ))}
+                {pageAnnotations.map((annotation) => {
+                  if (annotation.kind === 'shape') {
+                    return (
+                      <button
+                        key={annotation.id}
+                        type="button"
+                        onClick={() => setSelectedAnnotationId(annotation.id)}
+                        className={`absolute resize overflow-hidden border bg-transparent ${
+                          selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-transparent'
+                        }`}
+                        style={{
+                          left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
+                          top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
+                          width: `${(annotation.widthRatio || 0.22) * (pageContentSize.width || 1)}px`,
+                          height: `${(annotation.heightRatio || 0.12) * (pageContentSize.height || 1)}px`,
+                          transform: 'translateY(-100%)',
+                        }}
+                        dangerouslySetInnerHTML={{
+                          __html: getShapeSvg(annotation.shape || 'rectangle', {
+                            stroke: annotation.color,
+                            fill: 'rgba(220, 38, 38, 0.08)',
+                          }),
+                        }}
+                      />
+                    )
+                  }
+
+                  return (
+                    <textarea
+                      key={annotation.id}
+                      data-pdf-annotation-id={annotation.id}
+                      value={annotation.text}
+                      onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
+                      onFocus={() => setSelectedAnnotationId(annotation.id)}
+                      rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
+                      className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
+                        selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
+                      }`}
+                      style={{
+                        left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
+                        top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
+                        fontSize: `${annotation.fontSize}px`,
+                        fontFamily: annotation.fontFamily,
+                        color: annotation.color,
+                        transform: 'translateY(-100%)',
+                        lineHeight: 1.25,
+                      }}
+                    />
+                  )
+                })}
               </div>
             </div>
 
             {selectedAnnotationId && (
               <div className="mt-3 flex flex-wrap items-center gap-3 rounded border bg-gray-50 p-3">
                 <span className="text-sm font-medium text-gray-700">Selected Annotation</span>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  Font
-                  <select
-                    value={selectedAnnotation?.fontFamily || 'Helvetica'}
-                    onChange={(e) => updateAnnotation(selectedAnnotationId, { fontFamily: e.target.value })}
-                    className="w-36 rounded border px-2 py-1"
-                  >
-                    {EDITOR_FONT_FAMILIES.map((font) => (
-                      <option key={font} value={font} style={{ fontFamily: font }}>
-                        {font}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  Size
-                  <select
-                    value={selectedAnnotation?.fontSize || 14}
-                    onChange={(e) =>
-                      updateAnnotation(selectedAnnotationId, {
-                        fontSize: parseInt(e.target.value, 10),
-                      })
-                    }
-                    className="w-20 rounded border px-2 py-1"
-                  >
-                    {EDITOR_FONT_SIZES.map((size) => (
-                      <option key={size} value={size}>
-                        {size}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                {selectedAnnotation?.kind !== 'shape' && (
+                  <>
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      Font
+                      <select
+                        value={selectedAnnotation?.fontFamily || 'Helvetica'}
+                        onChange={(e) => updateAnnotation(selectedAnnotationId, { fontFamily: e.target.value })}
+                        className="w-36 rounded border px-2 py-1"
+                      >
+                        {EDITOR_FONT_FAMILIES.map((font) => (
+                          <option key={font} value={font} style={{ fontFamily: font }}>
+                            {font}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-700">
+                      Size
+                      <select
+                        value={selectedAnnotation?.fontSize || 14}
+                        onChange={(e) =>
+                          updateAnnotation(selectedAnnotationId, {
+                            fontSize: parseInt(e.target.value, 10),
+                          })
+                        }
+                        className="w-20 rounded border px-2 py-1"
+                      >
+                        {EDITOR_FONT_SIZES.map((size) => (
+                          <option key={size} value={size}>
+                            {size}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
                 <label className="flex items-center gap-2 text-sm text-gray-700">
                   Color
                   <input

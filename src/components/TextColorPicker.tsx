@@ -77,13 +77,14 @@ export default function TextColorPicker({
     const max = Math.max(r, g, b)
     const min = Math.min(r, g, b)
     let h = 0
+    let s = 0
     const l = (max + min) / 2
     
     if (max === min) {
       h = 0
     } else {
       const d = max - min
-      const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
       switch (max) {
         case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break
         case g: h = ((b - r) / d + 2) / 6; break
@@ -91,7 +92,7 @@ export default function TextColorPicker({
       }
     }
     
-    return { h: h * 360, s: 100, l: l * 100 }
+    return { h: h * 360, s: s * 100, l: l * 100 }
   }
 
   // Initialize HSL from currentColor
@@ -226,7 +227,6 @@ export default function TextColorPicker({
   }
 
   const normalizedSelected = normalizeColor(selectedColor)
-  const currentHslColor = hslToHex(hue, saturation, lightness)
 
   return (
     <div className={styles.containerWrapper} ref={containerRef}>

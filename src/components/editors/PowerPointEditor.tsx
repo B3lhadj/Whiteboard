@@ -8,6 +8,7 @@ import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
 import { getThemeForFileType } from '../../utils'
+import { getShapeSvg, type ShapeKind } from '../../shapes'
 
 interface TextRun {
   text: string
@@ -60,8 +61,12 @@ interface Slide {
 interface PptOverlayText {
   id: string
   slideIndex: number
+  kind: 'text' | 'shape'
   xRatio: number
   yRatio: number
+  widthRatio?: number
+  heightRatio?: number
+  shape?: ShapeKind
   text: string
   fontSize: number
   fontFamily: string
@@ -71,6 +76,8 @@ interface PptOverlayText {
 interface PowerPointEditorProps {
   file: DocumentFile
 }
+
+type LetterCaseMode = 'upper' | 'lower'
 
 const arrayBufferToFile = (content: ArrayBuffer, name: string) =>
   new File([content], name, {
@@ -98,7 +105,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const setWordCount = useDocumentStore((state) => state.setWordCount)
   const setCharCount = useDocumentStore((state) => state.setCharCount)
   const activeTool = useDocumentStore((state) => state.activeTool)
-  const zoom = useDocumentStore((state) => state.zoom)
+  const selectedShape = useDocumentStore((state) => state.selectedShape)
   const textColor = useDocumentStore((state) => state.textColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
@@ -859,7 +866,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   }
 
   const handleSlideCanvasClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if ((!isAddingText && activeTool !== 'text') || file.viewOnly) {
+    if ((!isAddingText && activeTool !== 'text' && activeTool !== 'shape') || file.viewOnly) {
       setSelectedImageIndex(null)
       return
     }
@@ -898,16 +905,21 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
       return
     }
 
-    const id = `ppt-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    const overlayKind = activeTool === 'shape' ? 'shape' : 'text'
+    const id = `ppt-${overlayKind}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 
     setOverlayTexts((previous) => [
       ...previous,
       {
         id,
         slideIndex: currentPage - 1,
+        kind: overlayKind,
         xRatio,
         yRatio,
-        text: 'Edit text',
+        widthRatio: overlayKind === 'shape' ? 0.2 : undefined,
+        heightRatio: overlayKind === 'shape' ? 0.13 : undefined,
+        shape: overlayKind === 'shape' ? selectedShape : undefined,
+        text: overlayKind === 'shape' ? '' : 'Edit text',
         fontSize: textFontSize,
         fontFamily: textFontFamily,
         color: textColor,
@@ -950,6 +962,51 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const handleOverlayTextInput = (id: string, element: HTMLElement) => {
     updateOverlayText(id, { text: element.innerText })
   }
+
+  useEffect(() => {
+    const transformText = (text: string, mode: LetterCaseMode) =>
+      mode === 'upper' ? text.toLocaleUpperCase() : text.toLocaleLowerCase()
+
+    const handleChangeCase = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: LetterCaseMode }>).detail?.mode
+      if (!mode || !selectedOverlayId) return
+
+      setOverlayTexts((previous) =>
+        previous.map((overlay) => {
+          if (overlay.id !== selectedOverlayId || overlay.kind === 'shape') return overlay
+
+          const selection = window.getSelection()
+          const activeElement = document.activeElement
+          const canUseSelection =
+            activeElement instanceof HTMLElement &&
+            activeElement.isContentEditable &&
+            selection &&
+            selection.rangeCount > 0 &&
+            !selection.getRangeAt(0).collapsed &&
+            activeElement.textContent === overlay.text
+
+          if (!canUseSelection) {
+            return { ...overlay, text: transformText(overlay.text, mode) }
+          }
+
+          const range = selection.getRangeAt(0)
+          const selectedText = range.toString()
+          if (!selectedText) return { ...overlay, text: transformText(overlay.text, mode) }
+
+          const start = overlay.text.indexOf(selectedText)
+          if (start < 0) return { ...overlay, text: transformText(overlay.text, mode) }
+
+          return {
+            ...overlay,
+            text: `${overlay.text.slice(0, start)}${transformText(selectedText, mode)}${overlay.text.slice(start + selectedText.length)}`,
+          }
+        })
+      )
+    }
+
+    window.addEventListener('editor-change-case', handleChangeCase)
+    return () => window.removeEventListener('editor-change-case', handleChangeCase)
+  }, [selectedOverlayId])
 
   const beginOverlayMove = (event: React.PointerEvent<HTMLButtonElement>, id: string) => {
     event.preventDefault()
@@ -1012,7 +1069,6 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
 
   const isRenderedSlide = Boolean(activeSlide?.imageData) && !isObjectEditMode
   const canObjectEdit = editableSlides.length > 0
-  const slideZoom = zoom / 100
   const selectedOverlay = selectedOverlayId
     ? overlayTexts.find((item) => item.id === selectedOverlayId)
     : null
@@ -1106,6 +1162,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                 />
                 {currentSlideOverlays.map((overlay) => {
                   const isSelected = selectedOverlayId === overlay.id
+                  const isShape = overlay.kind === 'shape'
 
                   return (
                     <div
@@ -1115,26 +1172,42 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                         left: `${overlay.xRatio * 100}%`,
                         top: `${overlay.yRatio * 100}%`,
                         transform: 'translate(-2px, -50%)',
+                        width: isShape ? `${(overlay.widthRatio || 0.2) * 100}%` : undefined,
+                        height: isShape ? `${(overlay.heightRatio || 0.13) * 100}%` : undefined,
                       }}
                       onClick={(event) => event.stopPropagation()}
                     >
-                      <div
-                        contentEditable={!file.viewOnly}
-                        suppressContentEditableWarning
-                        spellCheck={false}
-                        onFocus={() => setSelectedOverlayId(overlay.id)}
-                        onClick={() => setSelectedOverlayId(overlay.id)}
-                        onInput={(event) => handleOverlayTextInput(overlay.id, event.currentTarget)}
-                        className={`min-w-[80px] max-w-[420px] whitespace-pre-wrap px-1 font-semibold leading-tight outline-none ${isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''
-                          }`}
-                        style={{
-                          color: overlay.color,
-                          fontSize: `${overlay.fontSize}px`,
-                          fontFamily: overlay.fontFamily,
-                        }}
-                      >
-                        {overlay.text}
-                      </div>
+                      {isShape ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedOverlayId(overlay.id)}
+                          className={`block h-full w-full bg-transparent ${isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''}`}
+                          dangerouslySetInnerHTML={{
+                            __html: getShapeSvg(overlay.shape || 'rectangle', {
+                              stroke: overlay.color,
+                              fill: 'rgba(194, 65, 12, 0.08)',
+                            }),
+                          }}
+                        />
+                      ) : (
+                        <div
+                          contentEditable={!file.viewOnly}
+                          suppressContentEditableWarning
+                          spellCheck={false}
+                          onFocus={() => setSelectedOverlayId(overlay.id)}
+                          onClick={() => setSelectedOverlayId(overlay.id)}
+                          onInput={(event) => handleOverlayTextInput(overlay.id, event.currentTarget)}
+                          className={`min-w-[80px] max-w-[420px] whitespace-pre-wrap px-1 font-semibold leading-tight outline-none ${isSelected ? 'rounded border border-dashed border-red-500 bg-white/15' : ''
+                            }`}
+                          style={{
+                            color: overlay.color,
+                            fontSize: `${overlay.fontSize}px`,
+                            fontFamily: overlay.fontFamily,
+                          }}
+                        >
+                          {overlay.text}
+                        </div>
+                      )}
                       {isSelected && !file.viewOnly && (
                         <div className="absolute -top-7 left-0 flex items-center gap-1 rounded bg-white px-1 py-0.5 shadow">
                           <button
@@ -1433,44 +1506,48 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
             onNext={() => handleSlideChange(Math.min(slides.length, currentPage + 1))}
             accentColor="#c2410c"
             className="sticky bottom-0 z-20 mt-4 border-t border-gray-200 bg-white/95 backdrop-blur"
-            themeColor=""
+            themeColor={themeColor}
           />
         )}
 
         {selectedOverlayId && !file.viewOnly && (
           <div className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              Font
-              <select
-                value={selectedOverlay?.fontFamily || 'Calibri'}
-                onChange={(event) => updateOverlayText(selectedOverlayId, { fontFamily: event.target.value })}
-                className="w-36 rounded border px-2 py-1"
-              >
-                {EDITOR_FONT_FAMILIES.map((font) => (
-                  <option key={font} value={font} style={{ fontFamily: font }}>
-                    {font}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              Size
-              <select
-                value={selectedOverlay?.fontSize || 24}
-                onChange={(event) =>
-                  updateOverlayText(selectedOverlayId, {
-                    fontSize: parseInt(event.target.value, 10),
-                  })
-                }
-                className="w-20 rounded border px-2 py-1"
-              >
-                {EDITOR_FONT_SIZES.map((size) => (
-                  <option key={size} value={size}>
-                    {size}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {selectedOverlay?.kind !== 'shape' && (
+              <>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  Font
+                  <select
+                    value={selectedOverlay?.fontFamily || 'Calibri'}
+                    onChange={(event) => updateOverlayText(selectedOverlayId, { fontFamily: event.target.value })}
+                    className="w-36 rounded border px-2 py-1"
+                  >
+                    {EDITOR_FONT_FAMILIES.map((font) => (
+                      <option key={font} value={font} style={{ fontFamily: font }}>
+                        {font}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  Size
+                  <select
+                    value={selectedOverlay?.fontSize || 24}
+                    onChange={(event) =>
+                      updateOverlayText(selectedOverlayId, {
+                        fontSize: parseInt(event.target.value, 10),
+                      })
+                    }
+                    className="w-20 rounded border px-2 py-1"
+                  >
+                    {EDITOR_FONT_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <label className="flex items-center gap-2 text-sm text-gray-700">
               Color
               <input
@@ -1497,7 +1574,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
               className="flex items-center gap-1.5 rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
             >
               <Trash2 size={14} />
-              Delete Text
+              {selectedOverlay?.kind === 'shape' ? 'Delete Shape' : 'Delete Text'}
             </button>
           </div>
         )}
