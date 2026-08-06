@@ -11,6 +11,7 @@ export function getFileType(file: File): FileType {
   if (name.endsWith('.pdf')) return 'pdf'
   // Image support
   if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.gif') || name.endsWith('.webp') || name.endsWith('.bmp') || name.endsWith('.svg')) return 'image'
+  if (name.endsWith('.mp4') || name.endsWith('.webm') || name.endsWith('.ogv') || name.endsWith('.mov') || name.endsWith('.m4v')) return 'video'
   return null
 }
 
@@ -21,6 +22,7 @@ export function getThemeForFileType(fileType: FileType): string {
     pptx: '#c2410c',
     pdf: '#dc2626',
     image: '#0891b2',
+    video: '#0f766e',
     whiteboard: '#7c3aed',
     default: '#2b579a',
   }
@@ -34,6 +36,7 @@ export function getThemeNameForFileType(fileType: FileType): string {
     pptx: 'PowerPoint Red',
     pdf: 'Adobe Red',
     image: 'Image Cyan',
+    video: 'Video Teal',
     whiteboard: 'Whiteboard Purple',
     default: 'Default Blue',
   }

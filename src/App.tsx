@@ -8,7 +8,6 @@ import './App.css'
 function App() {
   const [mounted, setMounted] = useState(false)
   const currentFile = useDocumentStore((state) => state.currentFile)
-  const darkMode = useDocumentStore((state) => state.darkMode)
   const toasts = useDocumentStore((state) => state.toasts)
   const removeToast = useDocumentStore((state) => state.removeToast)
   const loadRecentFilesFromStorage = useDocumentStore(
@@ -25,7 +24,7 @@ function App() {
   }
 
   return (
-    <div className={darkMode ? 'dark' : ''}>
+    <div className="h-full w-full">
       {currentFile ? (
         <EditorView file={currentFile} />
       ) : (

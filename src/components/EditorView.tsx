@@ -12,13 +12,20 @@ import Ribbon, {
   type RibbonActions,
   type TextEffectValue,
 } from './Ribbon'
-import ImageEditorRibbon, { type ImageEditorRibbonActions } from './ImageEditorRibbon'
+import ImageEditorRibbon, {
+  type ImageDrawingTool,
+  type ImageEditorRibbonActions,
+  type ShapeTextAlign,
+  type ShapeTextVerticalAlign,
+} from './ImageEditorRibbon'
+import type { ImageEditorObjectType, ImageObjectStyle, VideoExportQuality } from './ImageEditorCanvas'
 import StatusBar from './StatusBar'
 import WordEditor from './editors/WordEditor'
 import PowerPointEditor from './editors/PowerPointEditor'
 import PDFEditor from './editors/PDFEditor'
 import ExcelEditor from './editors/ExcelEditor'
-import ImageEditor from './editors/ImageEditor'
+import ImageEditor, { type ImageEditorHandle } from './editors/ImageEditor'
+import VideoEditor from './editors/VideoEditor'
 import WhiteboardEditor from './editors/WhiteboardEditor'
 
 interface EditorViewProps {
@@ -48,14 +55,44 @@ interface UndoHistoryEntry {
 
 export default function EditorView({ file }: EditorViewProps) {
   const [, setIsSaving] = useState(false)
-  const [rotation, setRotation] = useState(0)
-  const [isPanActive, setIsPanActive] = useState(false)
-  const [isPanning, setIsPanning] = useState(false)
-  const [position, setPosition] = useState({ x: 0, y: 0 })
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [undoHistory, setUndoHistory] = useState<UndoHistoryEntry[]>([])
   const [redoHistory, setRedoHistory] = useState<UndoHistoryEntry[]>([])
-  const imageContainerRef = useRef<HTMLDivElement>(null)
+  const imageEditorRef = useRef<ImageEditorHandle>(null)
+  const [imageActiveTool, setImageActiveTool] = useState<ImageDrawingTool>('select')
+  const [imageBrushSize, setImageBrushSize] = useState(6)
+  const [imageBrushOpacity, setImageBrushOpacity] = useState(100)
+  const [imageBrushColor, setImageBrushColor] = useState('#0f172a')
+  const [imageBackgroundColor, setImageBackgroundColor] = useState('#ffffff')
+  const [imageFillColor, setImageFillColor] = useState('#e0f2fe')
+  const [imageStrokeColor, setImageStrokeColor] = useState('#0891b2')
+  const [imageStrokeWidth, setImageStrokeWidth] = useState(2)
+  const [imageShapeRotation, setImageShapeRotation] = useState(0)
+  const [imageShapeWidth, setImageShapeWidth] = useState(120)
+  const [imageShapeHeight, setImageShapeHeight] = useState(80)
+  const [imageSelectedObjectId, setImageSelectedObjectId] = useState<string | undefined>(undefined)
+  const [imageSelectedObjectType, setImageSelectedObjectType] = useState<ImageEditorObjectType | undefined>(undefined)
+  const [imageTextFontFamily, setImageTextFontFamily] = useState('Arial')
+  const [imageTextFontSize, setImageTextFontSize] = useState(24)
+  const [imageTextBold, setImageTextBold] = useState(false)
+  const [imageTextItalic, setImageTextItalic] = useState(false)
+  const [imageTextColor, setImageTextColor] = useState('#0f172a')
+  const [imageTextRotation, setImageTextRotation] = useState(0)
+  const [imageShapeText, setImageShapeText] = useState('')
+  const [imageShapeTextAlign, setImageShapeTextAlign] = useState<ShapeTextAlign>('center')
+  const [imageShapeTextVerticalAlign, setImageShapeTextVerticalAlign] = useState<ShapeTextVerticalAlign>('middle')
+  const [imageBorderRadius, setImageBorderRadius] = useState(12)
+  const [imageBorderWidth, setImageBorderWidth] = useState(0)
+  const [imageBorderColor, setImageBorderColor] = useState('#ffffff')
+  const [imageObjectOpacity, setImageObjectOpacity] = useState(100)
+  const [imageElementStartTime, setImageElementStartTime] = useState(0)
+  const [imageElementEndTime, setImageElementEndTime] = useState(0)
+  const [mediaCurrentTime, setMediaCurrentTime] = useState(0)
+  const [mediaDuration, setMediaDuration] = useState(0)
+  const [videoExportQuality, setVideoExportQuality] = useState<VideoExportQuality>('fullHd')
+  const [convertingToVideo, setConvertingToVideo] = useState(false)
+  const [, setMediaPlaying] = useState(false)
+  const [imageCanUndo, setImageCanUndo] = useState(false)
+  const [imageCanRedo, setImageCanRedo] = useState(false)
   const suppressHistoryRef = useRef(false)
   const beforeInputSnapshotRef = useRef<{
     root: HTMLElement
@@ -64,6 +101,7 @@ export default function EditorView({ file }: EditorViewProps) {
   const editableHtmlSnapshotsRef = useRef<WeakMap<HTMLElement, string>>(new WeakMap())
 
   const clearCurrentFile = useDocumentStore((state) => state.clearCurrentFile)
+  const setCurrentFile = useDocumentStore((state) => state.setCurrentFile)
   const editorHtml = useDocumentStore((state) => state.editorHtml)
   const zoom = useDocumentStore((state) => state.zoom)
   const setZoom = useDocumentStore((state) => state.setZoom)
@@ -106,6 +144,7 @@ export default function EditorView({ file }: EditorViewProps) {
 
   const getDocumentMimeType = () => {
     if (file.type === 'image') return getImageMimeType(file.name)
+    if (file.type === 'video') return getVideoMimeType(file.name)
 
     const mimeTypes: Record<string, string> = {
       docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -283,10 +322,10 @@ export default function EditorView({ file }: EditorViewProps) {
       return
     }
 
-    // Handle image export
-    if (file.type === 'image') {
+    // Handle image/video export
+    if (file.type === 'image' || file.type === 'video') {
       try {
-        const blob = new Blob([file.content], { type: getImageMimeType(file.name) })
+        const blob = new Blob([file.content], { type: file.type === 'video' ? getVideoMimeType(file.name) : getImageMimeType(file.name) })
         const url = URL.createObjectURL(blob)
         const a = document.createElement('a')
         a.href = url
@@ -296,7 +335,7 @@ export default function EditorView({ file }: EditorViewProps) {
         showSuccessToast(`${file.name} exported successfully!`, file.type)
       } catch (err) {
         console.error('Export failed:', err)
-        showErrorToast('Could not export image.')
+        showErrorToast(`Could not export ${file.type}.`)
       }
       return
     }
@@ -316,6 +355,18 @@ export default function EditorView({ file }: EditorViewProps) {
       'svg': 'image/svg+xml'
     }
     return mimeTypes[ext || ''] || 'image/png'
+  }
+
+  const getVideoMimeType = (filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase()
+    const mimeTypes: Record<string, string> = {
+      mp4: 'video/mp4',
+      webm: 'video/webm',
+      ogv: 'video/ogg',
+      mov: 'video/quicktime',
+      m4v: 'video/x-m4v',
+    }
+    return mimeTypes[ext || ''] || 'video/mp4'
   }
 
   const handlePrint = () => {
@@ -347,59 +398,29 @@ export default function EditorView({ file }: EditorViewProps) {
       }
       return
     }
-    window.print()
-  }
-
-  // Image-specific handlers
-  const handleRotateLeft = () => {
-    setRotation(prev => prev - 90)
-  }
-
-  const handleRotateRight = () => {
-    setRotation(prev => prev + 90)
-  }
-
-  const handleResetRotation = () => {
-    setRotation(0)
-  }
-
-  const handleResetPosition = () => {
-    setPosition({ x: 0, y: 0 })
-  }
-
-  useEffect(() => {
-    const container = imageContainerRef.current
-    if (container) {
-      container.style.transform = `translate(${position.x}px, ${position.y}px) rotate(${rotation}deg)`
-    }
-  }, [position, rotation])
-
-  const handleTogglePan = () => {
-    setIsPanActive((active) => !active)
-    setIsPanning(false)
-  }
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!isPanActive) return
-    setIsPanning(true)
-    setDragStart({
-      x: e.clientX - position.x,
-      y: e.clientY - position.y
-    })
-  }
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (isPanActive && isPanning) {
-      const newPosition = {
-        x: e.clientX - dragStart.x,
-        y: e.clientY - dragStart.y
+    if (file.type === 'video') {
+      const printWindow = window.open('', '_blank')
+      if (printWindow) {
+        const videoUrl = URL.createObjectURL(new Blob([file.content], { type: getVideoMimeType(file.name) }))
+        printWindow.document.write(`
+          <html>
+            <head>
+              <title>${file.name}</title>
+              <style>
+                body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background:#000; }
+                video { max-width: 100%; max-height: 100vh; object-fit: contain; }
+              </style>
+            </head>
+            <body>
+              <video src="${videoUrl}" controls autoplay></video>
+            </body>
+          </html>
+        `)
+        printWindow.document.close()
       }
-      setPosition(newPosition)
+      return
     }
-  }
-
-  const handleMouseUp = () => {
-    setIsPanning(false)
+    window.print()
   }
 
   const getEditableRoot = () => {
@@ -1205,13 +1226,6 @@ export default function EditorView({ file }: EditorViewProps) {
     onSetLanguage: applyLanguageToSelection,
     onBack: handleBack,
     onLogout: handleBack,
-    // Image-specific actions
-    onRotateLeft: file.type === 'image' ? handleRotateLeft : undefined,
-    onRotateRight: file.type === 'image' ? handleRotateRight : undefined,
-    onResetRotation: file.type === 'image' ? handleResetRotation : undefined,
-    onTogglePan: file.type === 'image' ? handleTogglePan : undefined,
-    onResetPosition: file.type === 'image' ? handleResetPosition : undefined,
-    isPanActive,
   }
 
   useEffect(() => {
@@ -1240,46 +1254,265 @@ export default function EditorView({ file }: EditorViewProps) {
         e.preventDefault()
         handleRedo()
       }
+      if (
+        (file.type === 'image' || file.type === 'video') &&
+        imageSelectedObjectId &&
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        !(e.target instanceof HTMLInputElement) &&
+        !(e.target instanceof HTMLTextAreaElement) &&
+        !(e.target instanceof HTMLSelectElement) &&
+        !(e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
+        e.preventDefault()
+        imageEditorRef.current?.deleteSelectedObject()
+      }
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [clearCurrentFile, handleRedo, handleUndo])
+  }, [clearCurrentFile, file.type, handleRedo, handleUndo, imageSelectedObjectId])
+
+  const handleImageObjectSelect = (
+    id: string | undefined,
+    type?: ImageEditorObjectType,
+    style?: ImageObjectStyle
+  ) => {
+    setImageSelectedObjectId(id)
+    setImageSelectedObjectType(type)
+    if (!style) return
+    setImageElementStartTime(style.startTime || 0)
+    setImageElementEndTime(style.endTime || mediaDuration || 0)
+
+    if (type === 'text') {
+      setImageTextColor(style.color)
+      setImageTextFontFamily(style.fontFamily || 'Arial')
+      setImageTextFontSize(style.fontSize || 24)
+      setImageTextBold(Boolean(style.bold))
+      setImageTextItalic(Boolean(style.italic))
+      setImageTextRotation(style.rotation || 0)
+      return
+    }
+
+    if (type === 'shape') {
+      setImageFillColor(style.fillColor || '#e0f2fe')
+      setImageStrokeColor(style.strokeColor || style.color)
+      setImageStrokeWidth(style.size)
+      setImageShapeRotation(style.rotation || 0)
+      setImageShapeWidth(style.width || 120)
+      setImageShapeHeight(style.height || 80)
+      setImageShapeText(style.shapeText || '')
+      setImageShapeTextAlign(style.shapeTextAlign || 'center')
+      setImageShapeTextVerticalAlign(style.shapeTextVerticalAlign || 'middle')
+      return
+    }
+
+    if (type === 'drawing') {
+      setImageBrushColor(style.color)
+      setImageBrushSize(style.size)
+      setImageBrushOpacity(style.opacity)
+      return
+    }
+
+    if (type === 'image') {
+      setImageShapeWidth(style.width || 120)
+      setImageShapeHeight(style.height || 80)
+      setImageBorderRadius(style.borderRadius || 0)
+      setImageBorderWidth(style.borderWidth || 0)
+      setImageBorderColor(style.borderColor || '#ffffff')
+      setImageObjectOpacity(style.opacity)
+    }
+  }
+
+  const handleSetElementStartTime = (time: number) => {
+    const nextStart = Math.max(0, time)
+    const nextEnd = Math.max(nextStart, imageElementEndTime || mediaDuration || nextStart)
+    setImageElementStartTime(nextStart)
+    setImageElementEndTime(nextEnd)
+    imageEditorRef.current?.setSelectedObjectTiming(nextStart, nextEnd)
+  }
+
+  const handleSetElementEndTime = (time: number) => {
+    const nextEnd = Math.max(imageElementStartTime, time)
+    setImageElementEndTime(nextEnd)
+    imageEditorRef.current?.setSelectedObjectTiming(imageElementStartTime, nextEnd)
+  }
+
+  const handleConvertImageToVideo = async () => {
+    if (file.type !== 'image' || convertingToVideo) return
+    setConvertingToVideo(true)
+    try {
+      const imageBlob = new Blob([file.content], { type: getImageMimeType(file.name) })
+      const imageUrl = URL.createObjectURL(imageBlob)
+      const image = new Image()
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve()
+        image.onerror = () => reject(new Error('Could not load the image'))
+        image.src = imageUrl
+      })
+      const canvas = document.createElement('canvas')
+      canvas.width = image.naturalWidth || 1280
+      canvas.height = image.naturalHeight || 720
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Video canvas is unavailable')
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      URL.revokeObjectURL(imageUrl)
+
+      const stream = canvas.captureStream(30)
+      const videoTrack = stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack | undefined
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm'
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 })
+      const chunks: Blob[] = []
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunks.push(event.data)
+      }
+      const completed = new Promise<Blob>((resolve, reject) => {
+        recorder.onerror = () => reject(new Error('Could not create the video'))
+        recorder.onstop = () => resolve(new Blob(chunks, { type: 'video/webm' }))
+      })
+      recorder.start(100)
+      await new Promise<void>((resolve) => {
+        const startedAt = performance.now()
+        let frameId = 0
+        const drawFrame = (now: number) => {
+          context.drawImage(image, 0, 0, canvas.width, canvas.height)
+          videoTrack?.requestFrame?.()
+          if (now - startedAt >= 5000) {
+            window.cancelAnimationFrame(frameId)
+            resolve()
+            return
+          }
+          frameId = window.requestAnimationFrame(drawFrame)
+        }
+        frameId = window.requestAnimationFrame(drawFrame)
+      })
+      recorder.stop()
+      const videoBlob = await completed
+      stream.getTracks().forEach((track) => track.stop())
+      const content = await videoBlob.arrayBuffer()
+      const nextFile: DocumentFile = {
+        ...file,
+        id: `${file.id}-video-${Date.now()}`,
+        name: `${getBaseFileName(file.name)}.webm`,
+        type: 'video',
+        originalType: undefined,
+        content,
+        size: videoBlob.size,
+        uploadedAt: Date.now(),
+        convertedImageContent: file.content.slice(0),
+        convertedImageName: file.name,
+      }
+      setCurrentFile(nextFile)
+      useDocumentStore.getState().addRecentFile(nextFile)
+      showSuccessToast('Image converted to a 5 second video', 'video')
+    } catch (error) {
+      console.error('Image-to-video conversion failed:', error)
+      showErrorToast('Could not convert this image to video.')
+    } finally {
+      setConvertingToVideo(false)
+    }
+  }
 
   const imageRibbonActions: ImageEditorRibbonActions = {
-    onSetTool: () => {
-      // Image editor handles this internally
+    onSetTool: setImageActiveTool,
+    activeTool: imageActiveTool,
+    onSetBrushSize: setImageBrushSize,
+    onSetBrushOpacity: setImageBrushOpacity,
+    onSetBrushColor: setImageBrushColor,
+    onSetBackgroundColor: setImageBackgroundColor,
+    brushSize: imageBrushSize,
+    brushOpacity: imageBrushOpacity,
+    brushColor: imageBrushColor,
+    backgroundColor: imageBackgroundColor,
+    onSetFillColor: setImageFillColor,
+    onSetStrokeColor: setImageStrokeColor,
+    onSetStrokeWidth: setImageStrokeWidth,
+    onSetShapeRotation: setImageShapeRotation,
+    onSetShapeWidth: (width) => {
+      setImageShapeWidth(width)
+      imageEditorRef.current?.setSelectedShapeDimensions(width, undefined)
     },
-    activeTool: 'select',
-    onSetBrushSize: () => {},
-    onSetBrushOpacity: () => {},
-    onSetBrushColor: () => {},
-    brushSize: 6,
-    brushOpacity: 100,
-    brushColor: '#000000',
-    onSetFillColor: () => {},
-    onSetStrokeColor: () => {},
-    onSetStrokeWidth: () => {},
-    fillColor: '#ffffff',
-    strokeColor: '#000000',
-    strokeWidth: 2,
-    onZoomIn: () => {},
-    onZoomOut: () => {},
-    zoom: 100,
-    onRotateLeft: () => {},
-    onRotateRight: () => {},
-    onFlipHorizontal: () => {},
-    onFlipVertical: () => {},
-    onCrop: () => {},
-    onUndo: () => {},
-    onRedo: () => {},
-    onDeleteSelected: () => {},
-    onExport: () => {},
+    onSetShapeHeight: (height) => {
+      setImageShapeHeight(height)
+      imageEditorRef.current?.setSelectedShapeDimensions(undefined, height)
+    },
+    onSetImageBorderRadius: (radius) => {
+      setImageBorderRadius(radius)
+      imageEditorRef.current?.setSelectedImageStyle({ borderRadius: radius })
+    },
+    onSetImageBorderWidth: (width) => {
+      setImageBorderWidth(width)
+      imageEditorRef.current?.setSelectedImageStyle({ borderWidth: width })
+    },
+    onSetImageBorderColor: (color) => {
+      setImageBorderColor(color)
+      imageEditorRef.current?.setSelectedImageStyle({ borderColor: color })
+    },
+    onSetImageOpacity: (opacity) => {
+      setImageObjectOpacity(opacity)
+      imageEditorRef.current?.setSelectedImageStyle({ opacity })
+    },
+    onSetShapeText: setImageShapeText,
+    onSetShapeTextAlign: setImageShapeTextAlign,
+    onSetShapeTextVerticalAlign: setImageShapeTextVerticalAlign,
+    mediaType: file.type === 'video' ? 'video' : 'image',
+    mediaCurrentTime,
+    mediaDuration,
+    videoExportQuality,
+    onSetVideoExportQuality: setVideoExportQuality,
+    elementStartTime: imageElementStartTime,
+    elementEndTime: imageElementEndTime,
+    onSetElementStartTime: handleSetElementStartTime,
+    onSetElementEndTime: handleSetElementEndTime,
+    fillColor: imageFillColor,
+    strokeColor: imageStrokeColor,
+    strokeWidth: imageStrokeWidth,
+    shapeRotation: imageShapeRotation,
+    shapeWidth: imageShapeWidth,
+    shapeHeight: imageShapeHeight,
+    shapeText: imageShapeText,
+    shapeTextAlign: imageShapeTextAlign,
+    shapeTextVerticalAlign: imageShapeTextVerticalAlign,
+    imageBorderRadius,
+    imageBorderWidth,
+    imageBorderColor,
+    imageOpacity: imageObjectOpacity,
+    selectedObjectType: imageSelectedObjectType,
+    onSetTextFontFamily: setImageTextFontFamily,
+    onSetTextFontSize: setImageTextFontSize,
+    onToggleTextBold: () => setImageTextBold((bold) => !bold),
+    onToggleTextItalic: () => setImageTextItalic((italic) => !italic),
+    onSetTextColor: setImageTextColor,
+    onSetTextRotation: setImageTextRotation,
+    textFontFamily: imageTextFontFamily,
+    textFontSize: imageTextFontSize,
+    textBold: imageTextBold,
+    textItalic: imageTextItalic,
+    textColor: imageTextColor,
+    textRotation: imageTextRotation,
+    onZoomIn: () => setZoom(Math.min(300, zoom + 10)),
+    onZoomOut: () => setZoom(Math.max(25, zoom - 10)),
+    onResetZoom: () => setZoom(100),
+    zoom,
+    onRotateLeft: () => imageEditorRef.current?.rotateLeft(),
+    onRotateRight: () => imageEditorRef.current?.rotateRight(),
+    onFlipHorizontal: () => imageEditorRef.current?.flipHorizontal(),
+    onFlipVertical: () => imageEditorRef.current?.flipVertical(),
+    onCrop: () => setImageActiveTool('crop'),
+    onUndo: () => imageEditorRef.current?.undo(),
+    onRedo: () => imageEditorRef.current?.redo(),
+    undoAvailable: imageCanUndo,
+    redoAvailable: imageCanRedo,
+    onDeleteSelected: () => imageEditorRef.current?.deleteSelectedObject(),
+    onExport: (format) => imageEditorRef.current?.exportImage(format),
+    onConvertToVideo: handleConvertImageToVideo,
+    convertingToVideo,
   }
 
   return (
-    <div className="w-full h-full flex flex-col" data-editor-shell="true" style={{ backgroundColor: displayType === 'image' ? '#111827' : 'white' }}>
-      {displayType === 'image' ? (
+    <div className="w-full h-full flex flex-col" data-editor-shell="true" style={{ backgroundColor: displayType === 'image' || displayType === 'video' ? '#f1f5f9' : 'white' }}>
+      {displayType === 'image' || displayType === 'video' ? (
         <ImageEditorRibbon actions={imageRibbonActions} />
       ) : (
         <>
@@ -1303,21 +1536,21 @@ export default function EditorView({ file }: EditorViewProps) {
         </>
       )}
 
-      {/* Back button for images */}
-      {displayType === 'image' && (
-        <div data-print-hidden="true" className="flex items-center gap-2 border-b border-gray-700 bg-gray-800 px-4 py-2 text-xs text-gray-400 shadow-sm">
+      {/* Back button for media */}
+      {(displayType === 'image' || displayType === 'video') && (
+        <div data-print-hidden="true" className="flex items-center gap-2 border-b border-slate-200 bg-white px-4 py-2 text-xs text-slate-500 shadow-sm">
           <button
             onClick={handleBack}
             className="flex items-center gap-2 rounded px-3 py-2 font-medium text-white shadow-sm transition-opacity hover:opacity-90"
-            style={{ backgroundColor: '#ff9500' }}
+            style={{ backgroundColor: displayType === 'video' ? '#0f766e' : '#0891b2' }}
             title="Back"
           >
             <ChevronLeft size={18} />
             Back
           </button>
           <div className="flex-1 px-2">
-            <div className="font-semibold text-gray-200">{file.name}</div>
-            <div className="text-[11px] text-gray-400">{displayType?.toUpperCase()}</div>
+            <div className="font-semibold text-slate-800">{file.name}</div>
+            <div className="text-[11px] text-slate-500">{displayType?.toUpperCase()}</div>
           </div>
         </div>
       )}
@@ -1326,32 +1559,111 @@ export default function EditorView({ file }: EditorViewProps) {
       <div
         data-print-content="true"
         className="flex-1 overflow-hidden flex flex-col"
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
       >
         {file.type === 'docx' && <WordEditor file={file} />}
         {file.type === 'pptx' && <PowerPointEditor file={file} />}
         {file.type === 'pdf' && <PDFEditor file={file} />}
         {file.type === 'xlsx' && <ExcelEditor file={file} />}
-       {file.type === 'image' && (
-  <div 
-    ref={imageContainerRef}
-    style={{
-      cursor: isPanActive ? (isPanning ? 'grabbing' : 'grab') : 'default',
-      transition: 'transform 0.2s ease',
-      width: '100%',
-      height: '100%'
-    }}
-    onMouseDown={handleMouseDown}
-  >
-    <ImageEditor file={file} />  {/* This is correct */}
-  </div>
-)}
+        {file.type === 'image' && (
+          <div
+            className="flex-1 min-h-0"
+            style={{
+              width: '100%',
+              height: '100%',
+            }}
+          >
+            <ImageEditor
+              ref={imageEditorRef}
+              file={file}
+              activeTool={imageActiveTool}
+              brushSize={imageBrushSize}
+              brushOpacity={imageBrushOpacity}
+              brushColor={imageBrushColor}
+              backgroundColor={imageBackgroundColor}
+              fillColor={imageFillColor}
+              strokeColor={imageStrokeColor}
+              strokeWidth={imageStrokeWidth}
+              shapeRotation={imageShapeRotation}
+              textFontFamily={imageTextFontFamily}
+              textFontSize={imageTextFontSize}
+              textBold={imageTextBold}
+              textItalic={imageTextItalic}
+              textColor={imageTextColor}
+              textRotation={imageTextRotation}
+              shapeText={imageShapeText}
+              shapeTextAlign={imageShapeTextAlign}
+              shapeTextVerticalAlign={imageShapeTextVerticalAlign}
+              elementStartTime={imageElementStartTime}
+              elementEndTime={imageElementEndTime}
+              imageBorderRadius={imageBorderRadius}
+              imageBorderWidth={imageBorderWidth}
+              imageBorderColor={imageBorderColor}
+              imageOpacity={imageObjectOpacity}
+              selectedObjectId={imageSelectedObjectId}
+              onObjectSelect={handleImageObjectSelect}
+              onBackgroundFill={setImageBackgroundColor}
+              onHistoryChange={(canUndo, canRedo) => {
+                setImageCanUndo(canUndo)
+                setImageCanRedo(canRedo)
+              }}
+            />
+          </div>
+        )}
+        {file.type === 'video' && (
+          <div
+            className="flex-1 min-h-0"
+            style={{
+              width: '100%',
+              height: '100%',
+            }}
+          >
+            <VideoEditor
+              ref={imageEditorRef}
+              file={file}
+              activeTool={imageActiveTool}
+              brushSize={imageBrushSize}
+              brushOpacity={imageBrushOpacity}
+              brushColor={imageBrushColor}
+              backgroundColor={imageBackgroundColor}
+              fillColor={imageFillColor}
+              strokeColor={imageStrokeColor}
+              strokeWidth={imageStrokeWidth}
+              shapeRotation={imageShapeRotation}
+              textFontFamily={imageTextFontFamily}
+              textFontSize={imageTextFontSize}
+              textBold={imageTextBold}
+              textItalic={imageTextItalic}
+              textColor={imageTextColor}
+              textRotation={imageTextRotation}
+              shapeText={imageShapeText}
+              shapeTextAlign={imageShapeTextAlign}
+              shapeTextVerticalAlign={imageShapeTextVerticalAlign}
+              elementStartTime={imageElementStartTime}
+              elementEndTime={imageElementEndTime}
+              imageBorderRadius={imageBorderRadius}
+              imageBorderWidth={imageBorderWidth}
+              imageBorderColor={imageBorderColor}
+              imageOpacity={imageObjectOpacity}
+              selectedObjectId={imageSelectedObjectId}
+              onObjectSelect={handleImageObjectSelect}
+              onBackgroundFill={setImageBackgroundColor}
+              onHistoryChange={(canUndo, canRedo) => {
+                setImageCanUndo(canUndo)
+                setImageCanRedo(canRedo)
+              }}
+              onMediaTimeChange={(currentTime, duration, playing) => {
+                setMediaCurrentTime(currentTime)
+                setMediaDuration(duration)
+                setMediaPlaying(playing)
+              }}
+              exportQuality={videoExportQuality}
+            />
+          </div>
+        )}
         {file.type === 'whiteboard' && <WhiteboardEditor file={file} />}
       </div>
 
-      {displayType !== 'image' && (
+      {displayType !== 'image' && displayType !== 'video' && (
         <div data-print-hidden="true">
           <StatusBar file={file} />
         </div>
