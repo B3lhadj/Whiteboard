@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { DocumentFile } from '../../store'
-import { CheckCircle2, Minus, Plus, Trash2, Type, X, ZoomIn } from 'lucide-react'
+import { CheckCircle2, Minus, Palette, Plus, Trash2, Type, X, ZoomIn } from 'lucide-react'
 import ImageEditorCanvas, { type ImageEditorCanvasHandle, type ImageEditorObjectType, type ImageObjectStyle, type VideoExportQuality } from '../ImageEditorCanvas'
 import { getThemeForFileType } from '../../utils'
 import type { ImageDrawingTool, ShapeTextAlign, ShapeTextVerticalAlign } from '../ImageEditorRibbon'
@@ -148,6 +148,10 @@ const formatCaptionTime = (time: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}.${tenths}`
 }
 
+const clampCaptionSize = (size: number) => (
+  Math.min(96, Math.max(12, Number.isFinite(size) ? size : 28))
+)
+
 interface ExportJob {
   id: string
   filename: string
@@ -209,6 +213,9 @@ const VideoEditor = forwardRef<VideoEditorHandle, VideoEditorProps>(function Vid
   const [captionVisible, setCaptionVisible] = useState(false)
   const [captionSize, setCaptionSize] = useState(28)
   const [captionColor, setCaptionColor] = useState('#ffffff')
+  const [captionBackgroundColor, setCaptionBackgroundColor] = useState('#000000')
+  const [captionBackgroundVisible, setCaptionBackgroundVisible] = useState(true)
+  const [captionBackgroundOpacity, setCaptionBackgroundOpacity] = useState(78)
   const [captionFont, setCaptionFont] = useState('Arial')
   const [captionLanguage, setCaptionLanguage] = useState(getInitialCaptionLanguage)
   const [extractingCaptions, setExtractingCaptions] = useState(false)
@@ -592,6 +599,8 @@ const VideoEditor = forwardRef<VideoEditorHandle, VideoEditorProps>(function Vid
                 }
               } : undefined,
               color: captionColor,
+              backgroundColor: captionBackgroundVisible ? captionBackgroundColor : undefined,
+              backgroundOpacity: captionBackgroundVisible ? captionBackgroundOpacity : 0,
               fontFamily: captionFont,
               fontSize: captionSize,
             }}
@@ -673,8 +682,41 @@ const VideoEditor = forwardRef<VideoEditorHandle, VideoEditorProps>(function Vid
           <select value={captionFont} onChange={(event) => setCaptionFont(event.target.value)} className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs">
             {['Arial', 'Calibri', 'Georgia', 'Times New Roman', 'Verdana', 'Courier New'].map((font) => <option key={font}>{font}</option>)}
           </select>
-          <input type="number" min="12" max="72" value={captionSize} onChange={(event) => setCaptionSize(Number(event.target.value))} className="h-8 w-16 rounded-lg border border-slate-200 px-2 text-xs" title="Caption size" />
+          <input type="number" min="12" max="96" value={captionSize} onChange={(event) => setCaptionSize(clampCaptionSize(Number(event.target.value)))} className="h-8 w-16 rounded-lg border border-slate-200 px-2 text-xs" title="Caption size" />
           <input type="color" value={captionColor} onChange={(event) => setCaptionColor(event.target.value)} className="h-8 w-9 cursor-pointer rounded border border-slate-200 bg-white p-1" title="Caption color" />
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
+            <Palette size={14} className={captionBackgroundVisible ? 'text-teal-700' : 'text-slate-400'} />
+            <input
+              type="color"
+              value={captionBackgroundColor}
+              onChange={(event) => {
+                setCaptionBackgroundColor(event.target.value)
+                setCaptionBackgroundVisible(true)
+              }}
+              className="h-7 w-7 cursor-pointer rounded border border-slate-200 bg-white p-0.5"
+              title="Caption background color"
+            />
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={captionBackgroundOpacity}
+              onChange={(event) => {
+                setCaptionBackgroundOpacity(Number(event.target.value))
+                setCaptionBackgroundVisible(Number(event.target.value) > 0)
+              }}
+              className="h-1 w-20 cursor-pointer accent-teal-600"
+              title="Caption background opacity"
+            />
+            <button
+              type="button"
+              onClick={() => setCaptionBackgroundVisible((visible) => !visible)}
+              className="rounded border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600"
+              title={captionBackgroundVisible ? 'Hide caption background' : 'Show caption background'}
+            >
+              {captionBackgroundVisible ? 'None' : 'Show'}
+            </button>
+          </div>
           <div className="ml-auto flex h-8 items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600">
             <ZoomIn size={14} className="text-teal-700" />
             <button type="button" onClick={() => setVideoZoom((value) => Math.max(50, value - 10))} className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-slate-100" title="Zoom out">

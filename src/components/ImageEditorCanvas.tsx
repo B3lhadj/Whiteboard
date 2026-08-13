@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
-import { Clock3, Image as ImageIcon, Maximize2, Move, Music, Pause, Play, Plus, RotateCw, Scissors, Volume2, VolumeX } from 'lucide-react'
+import { Clock3, Image as ImageIcon, Maximize2, Minimize2, Minus, Move, Music, Pause, Play, Plus, RotateCw, Scissors, Volume2, VolumeX } from 'lucide-react'
 import type { ImageDrawingTool, ShapeTextAlign, ShapeTextVerticalAlign } from './ImageEditorRibbon'
 import type { CaptionCue } from '../captions'
 
@@ -103,6 +103,8 @@ interface ImageEditorCanvasProps {
     loading?: boolean
     onToggle?: () => void
     color: string
+    backgroundColor?: string
+    backgroundOpacity?: number
     fontFamily: string
     fontSize: number
   }
@@ -233,6 +235,9 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
     const [audioTrack, setAudioTrack] = useState<AudioTrackState | null>(null)
     const [audioVolume, setAudioVolume] = useState(100)
     const [audioMuted, setAudioMuted] = useState(false)
+    const [showExtraControls, setShowExtraControls] = useState(true)
+    const [previewZoom, setPreviewZoom] = useState(1)
+    const [isFullscreen, setIsFullscreen] = useState(false)
     const [audioStartTime, setAudioStartTime] = useState(0)
     const [audioEndTime, setAudioEndTime] = useState<number | undefined>(undefined)
     const [dragState, setDragState] = useState<{
@@ -670,20 +675,21 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
       const text = (activeCue?.text || captionOverlay?.text || '').trim()
       if (!captionOverlay?.visible || !text) return
 
-      ctx.save()
+      const captionBackgroundColor = captionOverlay?.backgroundColor?.trim() || ''
+      const backgroundOpacity = Math.max(0, Math.min(1, (captionOverlay?.backgroundOpacity ?? 0) / 100))
+      const renderBackground = backgroundOpacity > 0 && Boolean(captionBackgroundColor) && captionBackgroundColor.toLowerCase() !== 'transparent'
       const fontSize = Math.max(12, captionOverlay.fontSize * scale)
       const paddingX = 14 * scale
       const paddingY = 8 * scale
       const maxWidth = bounds.width * 0.82
       const lineHeight = fontSize * 1.25
+
+      ctx.save()
       ctx.font = `600 ${fontSize}px ${captionOverlay.fontFamily}, sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
 
       const timedWords = activeCue?.words || []
-      const activeWordIndex = timedWords.findIndex((word) => (
-        currentTime >= word.start && currentTime < word.end + 0.001
-      ))
       const tokens = timedWords.length > 0
         ? timedWords.map((word, index) => ({ text: word.text, index }))
         : text.split(/\s+/).map((word) => ({ text: word, index: -1 }))
@@ -711,9 +717,15 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
       const bottomSafeArea = Math.max(16 * scale, bounds.height * 0.055)
       const boxY = bounds.y + bounds.height - boxHeight - bottomSafeArea
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.78)'
-      drawRoundedRectPath(ctx, { x: boxX, y: boxY, width: boxWidth, height: boxHeight }, 3 * scale)
-      ctx.fill()
+      if (renderBackground) {
+        const backgroundColor = captionOverlay.backgroundColor || '#000000'
+        const solidColor = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(backgroundColor)
+          ? `${backgroundColor}${Math.round(backgroundOpacity * 255).toString(16).padStart(2, '0')}`
+          : backgroundColor
+        ctx.fillStyle = solidColor
+        drawRoundedRectPath(ctx, { x: boxX, y: boxY, width: boxWidth, height: boxHeight }, 3 * scale)
+        ctx.fill()
+      }
       visibleLines.forEach((line, index) => {
         const content = lineText(line)
         let cursorX = bounds.x + bounds.width / 2 - ctx.measureText(content).width / 2
@@ -722,8 +734,7 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
         line.forEach((token, tokenIndex) => {
           const displayText = tokenIndex === 0 || joinsWithoutSpace(token.text) ? token.text : ` ${token.text}`
           const tokenWidth = ctx.measureText(displayText).width
-          const isActiveWord = token.index === activeWordIndex
-          ctx.fillStyle = isActiveWord ? '#ffffff' : captionOverlay.color
+          ctx.fillStyle = captionOverlay.color || '#ffffff'
           ctx.fillText(displayText, cursorX, centerY, maxWidth)
           cursorX += tokenWidth
         })
@@ -766,6 +777,8 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
       drawCanvas()
     }, [
       captionOverlay?.color,
+      captionOverlay?.backgroundColor,
+      captionOverlay?.backgroundOpacity,
       captionOverlay?.fontFamily,
       captionOverlay?.fontSize,
       captionOverlay?.cues,
@@ -1628,6 +1641,24 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
       updateVideoState()
     }
 
+    const togglePreviewFullscreen = async () => {
+      if (!containerRef.current) return
+      if (document.fullscreenElement) {
+        await document.exitFullscreen()
+      } else {
+        await containerRef.current.requestFullscreen()
+      }
+    }
+
+    useEffect(() => {
+      const handleFullscreenChange = () => {
+        setIsFullscreen(Boolean(document.fullscreenElement))
+      }
+
+      document.addEventListener('fullscreenchange', handleFullscreenChange)
+      return () => document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }, [])
+
     useEffect(() => {
       if (!syntheticTimeline || !videoState.playing) return
       const startedAt = performance.now()
@@ -2114,82 +2145,118 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
     return (
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-100">
       <div ref={containerRef} className="group/video-canvas relative min-h-0 w-full flex-1 overflow-hidden bg-slate-100">
-        {imageUrl && !imageFailed && mediaType === 'image' ? (
-          <img
-            ref={imageRef}
-            src={imageUrl}
-            alt=""
-            className="absolute inset-0 h-full w-full object-contain"
-            draggable={false}
-            onLoad={drawCanvas}
-            onError={() => setImageFailed(true)}
-          />
-        ) : imageUrl && !imageFailed && mediaType === 'video' ? (
-          <video
-            ref={videoRef}
-            src={imageUrl}
-            className={`absolute inset-0 h-full w-full object-contain ${hideBaseMedia ? 'opacity-0' : ''}`}
-            playsInline
-            muted={Boolean(audioTrack) || audioMuted}
-            onLoadedMetadata={() => {
-              updateVideoState()
-              drawCanvas()
-            }}
-            onLoadedData={() => {
-              updateVideoState()
-              drawCanvas()
-            }}
-            onPlay={() => {
-              syncPreviewAudio()
-              updateVideoState()
-            }}
-            onPause={() => {
-              audioRef.current?.pause()
-              updateVideoState()
-            }}
-            onTimeUpdate={() => {
-              syncPreviewAudio()
-              updateVideoState()
-              drawCanvas()
-            }}
-            onError={() => setImageFailed(true)}
-          />
-        ) : imageFailed ? (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
-            Could not decode image
+        <div className="absolute right-3 top-3 z-20 flex items-center gap-2">
+          <div className="flex items-center rounded-lg border border-slate-300 bg-white/95 p-1 shadow-sm backdrop-blur">
+            <button
+              type="button"
+              onClick={() => setPreviewZoom((zoom) => Math.max(0.8, Number((zoom - 0.1).toFixed(1))))}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-700 transition-colors hover:bg-slate-100"
+              title="Zoom out preview"
+            >
+              <Minus size={15} />
+            </button>
+            <span className="min-w-11 text-center text-[11px] font-semibold tabular-nums text-slate-700">
+              {previewZoom.toFixed(1)}x
+            </span>
+            <button
+              type="button"
+              onClick={() => setPreviewZoom((zoom) => Math.min(2.5, Number((zoom + 0.1).toFixed(1))))}
+              className="flex h-8 w-8 items-center justify-center rounded-md text-slate-700 transition-colors hover:bg-slate-100"
+              title="Zoom in preview"
+            >
+              <Plus size={15} />
+            </button>
           </div>
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
-            No image loaded
-          </div>
-        )}
-        {audioTrack && (
-          <audio ref={audioRef} src={audioTrack.url} preload="auto" muted={audioMuted} />
-        )}
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 h-full w-full touch-none"
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={finishPointerAction}
-          onPointerCancel={finishPointerAction}
-          onPointerLeave={() => {
-            if (isDrawing) finishPointerAction()
-          }}
-          style={{ cursor }}
-        />
-        {selectedTextObject?.startPoint && (
-          <div
-            className="absolute z-10 rounded-xl border border-cyan-500/80 bg-white/35 p-1 shadow-[0_18px_42px_rgba(8,145,178,0.22)] backdrop-blur-sm"
-            style={{
-              left: selectedTextObject.startPoint.x,
-              top: selectedTextObject.startPoint.y - (selectedTextObject.properties.fontSize || 24),
-              width: Math.max(80, (selectedTextObject.text || 'Text').length * (selectedTextObject.properties.fontSize || 24) * 0.62),
-              minHeight: (selectedTextObject.properties.fontSize || 24) * 1.35,
-              transform: `rotate(${selectedTextObject.properties.rotation || 0}deg)`,
-              transformOrigin: 'left bottom',
-            }}
+          <button
+            type="button"
+            onClick={() => void togglePreviewFullscreen()}
+            className="flex h-9 items-center gap-2 rounded-lg border border-slate-300 bg-white/95 px-3 text-xs font-semibold text-slate-700 shadow-sm backdrop-blur transition-colors hover:border-slate-500 hover:bg-slate-50"
+            title={isFullscreen ? 'Exit full screen' : 'View full screen'}
           >
+            {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+            {isFullscreen ? 'Exit' : 'Full screen'}
+          </button>
+        </div>
+        <div
+          className="absolute inset-0 transition-transform duration-200"
+          style={{ transform: `scale(${previewZoom})`, transformOrigin: 'center center' }}
+        >
+          {imageUrl && !imageFailed && mediaType === 'image' ? (
+            <img
+              ref={imageRef}
+              src={imageUrl}
+              alt=""
+              className="absolute inset-0 h-full w-full object-contain"
+              draggable={false}
+              onLoad={drawCanvas}
+              onError={() => setImageFailed(true)}
+            />
+          ) : imageUrl && !imageFailed && mediaType === 'video' ? (
+            <video
+              ref={videoRef}
+              src={imageUrl}
+              className={`absolute inset-0 h-full w-full object-contain ${hideBaseMedia ? 'opacity-0' : ''}`}
+              playsInline
+              muted={Boolean(audioTrack) || audioMuted}
+              onLoadedMetadata={() => {
+                updateVideoState()
+                drawCanvas()
+              }}
+              onLoadedData={() => {
+                updateVideoState()
+                drawCanvas()
+              }}
+              onPlay={() => {
+                syncPreviewAudio()
+                updateVideoState()
+              }}
+              onPause={() => {
+                audioRef.current?.pause()
+                updateVideoState()
+              }}
+              onTimeUpdate={() => {
+                syncPreviewAudio()
+                updateVideoState()
+                drawCanvas()
+              }}
+              onError={() => setImageFailed(true)}
+            />
+          ) : imageFailed ? (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
+              Could not decode image
+            </div>
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">
+              No image loaded
+            </div>
+          )}
+          {audioTrack && (
+            <audio ref={audioRef} src={audioTrack.url} preload="auto" muted={audioMuted} />
+          )}
+          <canvas
+            ref={canvasRef}
+            className="absolute inset-0 h-full w-full touch-none"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={finishPointerAction}
+            onPointerCancel={finishPointerAction}
+            onPointerLeave={() => {
+              if (isDrawing) finishPointerAction()
+            }}
+            style={{ cursor }}
+          />
+          {selectedTextObject?.startPoint && (
+            <div
+              className="absolute z-10 rounded-xl border border-cyan-500/80 bg-white/35 p-1 shadow-[0_18px_42px_rgba(8,145,178,0.22)] backdrop-blur-sm"
+              style={{
+                left: selectedTextObject.startPoint.x,
+                top: selectedTextObject.startPoint.y - (selectedTextObject.properties.fontSize || 24),
+                width: Math.max(80, (selectedTextObject.text || 'Text').length * (selectedTextObject.properties.fontSize || 24) * 0.62),
+                minHeight: (selectedTextObject.properties.fontSize || 24) * 1.35,
+                transform: `rotate(${selectedTextObject.properties.rotation || 0}deg)`,
+                transformOrigin: 'left bottom',
+              }}
+            >
             <button
               type="button"
               className="absolute -left-4 top-1/2 flex h-8 w-8 -translate-y-1/2 cursor-move items-center justify-center rounded-full border border-cyan-500 bg-white text-cyan-700 shadow-lg transition-transform hover:scale-105"
@@ -2299,7 +2366,8 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
               )}
             </div>
           )
-        })()}
+          })()}
+        </div>
       </div>
       {mediaType === 'video' && imageUrl && !imageFailed && (
         <div className="flex shrink-0 items-center justify-center border-t border-slate-200 bg-white px-3 py-2">
@@ -2333,6 +2401,15 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
                 {captionOverlay.visible && <span className="absolute bottom-1 left-2 right-2 h-0.5 rounded-full bg-red-500" />}
               </button>
             )}
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowExtraControls((visible) => !visible)}
+                className="flex h-9 items-center rounded-md border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition-colors hover:border-slate-500 hover:bg-slate-50"
+              >
+                {showExtraControls ? 'Hide controls' : 'Show controls'}
+              </button>
+            </div>
             <span className="w-12 shrink-0 text-right text-xs font-semibold tabular-nums text-slate-600">
               {(timelineStartOffset + videoState.currentTime).toFixed(1)}s
             </span>
@@ -2352,7 +2429,7 @@ const ImageEditorCanvas = forwardRef<ImageEditorCanvasHandle, ImageEditorCanvasP
           </div>
         </div>
       )}
-      {mediaType === 'video' && imageUrl && !imageFailed && (
+      {mediaType === 'video' && imageUrl && !imageFailed && showExtraControls && (
         <div className="shrink-0 border-t border-slate-200 bg-[#f4f6f8] px-3 py-3 text-slate-900 shadow-[0_-12px_35px_rgba(15,23,42,0.08)]">
           <input ref={imageFileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImportImage} />
           <input ref={audioFileInputRef} type="file" accept="audio/*" className="hidden" onChange={handleImportAudio} />
