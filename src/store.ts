@@ -12,7 +12,7 @@ import {
 } from './pageLayout'
 import type { ShapeKind } from './shapes'
 
-export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | 'whiteboard' | null
+export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | 'video' | 'whiteboard' | null
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
 export type ToolbarTool = 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase'
 export type ToastType = 'success' | 'error' | 'info'
@@ -51,6 +51,8 @@ export interface DocumentFile {
   pageOrder?: number[] // For PDF/Word page ordering (array of original page indices)
   wordPages?: any[] // For Word document page previews
   sheetOrder?: string[] // For Excel sheet ordering
+  convertedImageContent?: ArrayBuffer // Original still retained as a timed video element
+  convertedImageName?: string
 }
 
 export interface DocumentState {

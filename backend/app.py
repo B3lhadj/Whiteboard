@@ -1,5 +1,5 @@
 from flask import Flask, redirect, request, jsonify, send_file
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash, generate_password_hash
 import base64
@@ -12,6 +12,7 @@ from io import BytesIO
 import shutil
 import subprocess
 import tempfile
+import threading
 import zipfile
 import xml.etree.ElementTree as ET
 import time
@@ -20,6 +21,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 import cloudmersive_convert_api_client
 from cloudmersive_convert_api_client.rest import ApiException
+try:
+    from .caption_timing import build_caption_cues
+except ImportError:
+    from caption_timing import build_caption_cues
+
+os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+os.environ.setdefault('OMP_NUM_THREADS', '1')
 
 import fitz
 
@@ -44,7 +52,28 @@ app = Flask(__name__)
 CORS(app)
 
 ALLOWED_EXTENSIONS = {'pptx'}
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max for video transcription
+
+_WHISPER_MODEL = None
+_WHISPER_MODEL_NAME = None
+_WHISPER_MODEL_LOCK = threading.Lock()
+
+
+def get_whisper_model(model_name, local_only):
+    """Load the local model once and safely reuse it between requests."""
+    global _WHISPER_MODEL, _WHISPER_MODEL_NAME
+    with _WHISPER_MODEL_LOCK:
+        if _WHISPER_MODEL is not None and _WHISPER_MODEL_NAME == model_name:
+            return _WHISPER_MODEL
+        from faster_whisper import WhisperModel
+        _WHISPER_MODEL = WhisperModel(
+            model_name,
+            device='cpu',
+            compute_type='int8',
+            local_files_only=local_only,
+        )
+        _WHISPER_MODEL_NAME = model_name
+        return _WHISPER_MODEL
 
 MONGODB_URI = os.environ.get('MONGODB_URI') or os.environ.get('MONGO_URI') or 'mongodb://localhost:27017'
 MONGODB_DB_NAME = os.environ.get('MONGODB_DB') or 'office_editor'
@@ -1409,6 +1438,110 @@ def pptx_to_word():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/transcribe-video', methods=['POST', 'OPTIONS'])
+@cross_origin(origins='*')
+def transcribe_video():
+    """Extract video audio and transcribe spoken words with a local Whisper model."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': 'No video file provided'}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'success': False, 'error': 'No video file selected'}), 400
+
+        requested_language = (request.form.get('language') or '').strip().lower()
+        supported_languages = {'en', 'fr', 'ar', 'es', 'de', 'it', 'pt', 'nl', 'tr'}
+        if requested_language and requested_language not in supported_languages:
+            return jsonify({'success': False, 'error': 'Unsupported transcription language'}), 400
+
+        filename = secure_filename(file.filename or 'video.webm')
+        work_dir = tempfile.mkdtemp(prefix='video_transcribe_')
+        video_path = os.path.join(work_dir, filename)
+
+        try:
+            file.save(video_path)
+            try:
+                import faster_whisper  # noqa: F401
+            except Exception:
+                return jsonify({
+                    'success': False,
+                    'error': 'Local transcription needs faster-whisper. Install it with: python -m pip install faster-whisper'
+                }), 500
+
+            bundled_model_path = Path(__file__).resolve().parent / 'models' / 'faster-whisper-tiny'
+            model_name = os.environ.get('LOCAL_TRANSCRIBE_MODEL') or (
+                str(bundled_model_path) if bundled_model_path.exists() else 'tiny'
+            )
+            local_only = os.path.exists(model_name)
+            try:
+                model = get_whisper_model(model_name, local_only)
+            except Exception as model_error:
+                print(f"Local transcription model load error: {model_error}")
+                return jsonify({
+                    'success': False,
+                    'error': (
+                        'Local transcription needs a Whisper model on this computer. '
+                        'The backend could not download it automatically. '
+                        'Download a faster-whisper model folder, then start the backend with '
+                        'LOCAL_TRANSCRIBE_MODEL set to that folder path.'
+                    )
+                }), 500
+
+            segments, info = model.transcribe(
+                video_path,
+                beam_size=5,
+                language=requested_language or None,
+                word_timestamps=True,
+                vad_filter=True,
+                condition_on_previous_text=False,
+                vad_parameters={
+                    'min_silence_duration_ms': 350,
+                    'speech_pad_ms': 120,
+                },
+            )
+            fallback_captions = []
+            timed_words = []
+            for segment in segments:
+                segment_text = segment.text.strip()
+                if not segment_text:
+                    continue
+                fallback_captions.append({
+                    'start': float(segment.start),
+                    'end': float(segment.end),
+                    'text': segment_text,
+                })
+                for word in getattr(segment, 'words', None) or []:
+                    if word.start is None or word.end is None:
+                        continue
+                    timed_words.append({
+                        'start': float(word.start),
+                        'end': float(word.end),
+                        'text': word.word,
+                    })
+            captions = build_caption_cues(timed_words) or fallback_captions
+            text = ' '.join(caption['text'] for caption in captions).strip()
+            if not text:
+                return jsonify({
+                    'success': False,
+                    'error': 'No spoken words were detected in this video audio.'
+                }), 422
+
+            return jsonify({
+                'success': True,
+                'text': text,
+                'captions': captions,
+                'language': getattr(info, 'language', None),
+                'timing': 'word' if timed_words else 'segment',
+            }), 200
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    except Exception as e:
+        print(f"Video transcription error: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'}), 200
@@ -2107,4 +2240,4 @@ def get_file_edit_status(file_id):
     }), 200
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000, use_reloader=False, threaded=True)

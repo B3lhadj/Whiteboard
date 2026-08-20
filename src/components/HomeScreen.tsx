@@ -210,7 +210,7 @@ export default function HomeScreen({ onLogout }: HomeScreenProps) {
   const handleFile = async (file: File) => {
     const fileType = getFileType(file)
     if (!fileType) {
-      showErrorToast('Unsupported file type. Please upload PDF, DOCX, PPTX, XLSX, XLSM, XLS, or an image.')
+      showErrorToast('Unsupported file type. Please upload PDF, DOCX, PPTX, XLSX, XLSM, XLS, image, or video.')
       return
     }
     const reader = new FileReader()
@@ -504,7 +504,7 @@ export default function HomeScreen({ onLogout }: HomeScreenProps) {
               <div className="diamond-row">
                 <div
                   className="diamond"
-                  onClick={() => openFileDialog('.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg', 'image')}
+                  onClick={() => openFileDialog('.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg,.mp4,.webm,.ogv,.mov,.m4v', 'image')}
                 >
                   <div className="diamond-content">
                     <img src={imageIcon} alt="Image" className="diamond-icon" />
@@ -605,7 +605,7 @@ export default function HomeScreen({ onLogout }: HomeScreenProps) {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg"
+            accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp,.svg,.mp4,.webm,.ogv,.mov,.m4v"
             onChange={handleFileInput}
             className="hidden"
             multiple
