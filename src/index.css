@@ -103,6 +103,71 @@ body {
   text-rendering: optimizeLegibility !important;
 }
 
+.word-editor-root .word-edit-highlight {
+  background-color: rgba(250, 204, 21, 0.28);
+  color: #92400e;
+  border-radius: 3px;
+  box-shadow: inset 0 -1px 0 rgba(217, 119, 6, 0.45);
+}
+
+/* ─── Header / Footer clickable zones ───────────────────────────── */
+.word-hf-zone {
+  display: block;
+  min-height: 28px;
+  padding: 4px 12px;
+  cursor: text;
+  user-select: text;
+  position: relative;
+  z-index: 5;
+  transition: all 0.15s;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 10px;
+  color: #374151;
+  background: rgba(248, 250, 252, 0.7);
+  outline: none;
+}
+
+.word-hf-zone--header {
+  border-bottom: 1px dashed #c7d2fe;
+  margin-bottom: 4px;
+}
+
+.word-hf-zone--footer {
+  border-top: 1px dashed #c7d2fe;
+  margin-top: 4px;
+}
+
+.word-hf-zone--active {
+  background: rgba(238, 242, 255, 0.55);
+  color: inherit;
+}
+
+.word-hf-zone:hover {
+  background: rgba(224, 231, 255, 0.55) !important;
+  outline: 1px dashed #a5b4fc;
+  outline-offset: -1px;
+}
+
+.word-hf-zone:focus {
+  background: #ffffff !important;
+  outline: 2px solid #6366f1 !important;
+  outline-offset: -1px;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.15);
+}
+
+.word-hf-placeholder {
+  font-style: italic;
+  color: #a5b4fc;
+  font-size: 10px;
+  font-family: Arial, Helvetica, sans-serif;
+  pointer-events: none;
+}
+
+/* Hide HF zones when printing */
+@media print {
+  .word-hf-injected { display: none !important; }
+}
+
 .word-editor-root .docx-wrapper > section,
 .word-editor-root section.docx {
   margin: 0 auto 16px;
@@ -122,6 +187,109 @@ body {
 .word-editor-root .word-virtual-page {
   width: var(--word-page-width, 794px) !important;
   min-height: var(--word-page-height, 1123px) !important;
+}
+
+.word-margin-ruler {
+  position: relative;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid #cbd5e1;
+  background-color: #f8fafc;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.word-margin-ruler-horizontal {
+  height: 28px;
+  margin-bottom: 6px;
+  background-image:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.17) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.09) 1px, transparent 1px);
+  background-size: 96px 100%, 24px 100%;
+}
+
+.word-margin-ruler-vertical {
+  width: 28px;
+  background-image:
+    linear-gradient(0deg, rgba(15, 23, 42, 0.17) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(15, 23, 42, 0.09) 1px, transparent 1px);
+  background-size: 100% 96px, 100% 24px;
+}
+
+.word-margin-ruler-shade {
+  position: absolute;
+  z-index: 1;
+  background: rgba(148, 163, 184, 0.42);
+}
+
+.word-margin-ruler-horizontal .word-margin-ruler-shade {
+  top: 0;
+  bottom: 0;
+}
+
+.word-margin-ruler-vertical .word-margin-ruler-shade {
+  left: 0;
+  right: 0;
+}
+
+.word-margin-ruler-number {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  user-select: none;
+  color: #334155;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.word-margin-ruler-number-horizontal {
+  top: 3px;
+  transform: translateX(-50%);
+}
+
+.word-margin-ruler-number-vertical {
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.word-margin-ruler-handle {
+  position: absolute;
+  z-index: 4;
+  border: 0;
+  background: #2563eb;
+  box-shadow: 0 0 0 2px #ffffff, 0 2px 8px rgba(15, 23, 42, 0.22);
+}
+
+.word-margin-ruler-handle-left,
+.word-margin-ruler-handle-right {
+  top: 3px;
+  width: 8px;
+  height: 22px;
+  cursor: ew-resize;
+}
+
+.word-margin-ruler-handle-left {
+  transform: translateX(-50%);
+}
+
+.word-margin-ruler-handle-right {
+  transform: translateX(50%);
+}
+
+.word-margin-ruler-handle-top,
+.word-margin-ruler-handle-bottom {
+  left: 3px;
+  width: 22px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.word-margin-ruler-handle-top {
+  transform: translateY(-50%);
+}
+
+.word-margin-ruler-handle-bottom {
+  transform: translateY(50%);
 }
 
 /* Force page breaks on large divs within docx-wrapper  */
@@ -257,6 +425,10 @@ body {
   outline-offset: 3px;
 }
 
+.word-shape-object.is-selected {
+  outline: none;
+}
+
 .word-shape-object {
   width: 150px;
   height: 88px;
@@ -279,11 +451,12 @@ body {
   width: 14px;
   height: 14px;
   transform: translateX(-50%);
-  border: 2px solid #2563eb;
+  border: 2px solid var(--word-shape-control-color, #2563eb);
   border-radius: 999px;
   background: #ffffff;
   cursor: grab;
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+  display: none;
 }
 
 .word-rotate-handle::before {
@@ -292,7 +465,7 @@ body {
   left: 50%;
   top: 12px;
   height: 13px;
-  border-left: 1px dashed #2563eb;
+  border-left: 1px dashed var(--word-shape-control-color, #2563eb);
   transform: translateX(-50%);
 }
 
@@ -302,11 +475,17 @@ body {
   bottom: -7px;
   width: 14px;
   height: 14px;
-  border: 2px solid #2563eb;
+  border: 2px solid var(--word-shape-control-color, #2563eb);
   border-radius: 3px;
   background: #ffffff;
   cursor: nwse-resize;
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.18);
+  display: none;
+}
+
+.word-shape-object.is-selected .word-rotate-handle,
+.word-shape-object.is-selected .word-resize-handle {
+  display: block;
 }
 
 .word-textbox-object {

@@ -67,6 +67,7 @@ interface PptOverlayText {
   widthRatio?: number
   heightRatio?: number
   shape?: ShapeKind
+  fillColor?: string
   text: string
   fontSize: number
   fontFamily: string
@@ -107,6 +108,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
   const activeTool = useDocumentStore((state) => state.activeTool)
   const selectedShape = useDocumentStore((state) => state.selectedShape)
   const textColor = useDocumentStore((state) => state.textColor)
+  const shapeFillColor = useDocumentStore((state) => state.shapeFillColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
@@ -919,6 +921,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
         widthRatio: overlayKind === 'shape' ? 0.2 : undefined,
         heightRatio: overlayKind === 'shape' ? 0.13 : undefined,
         shape: overlayKind === 'shape' ? selectedShape : undefined,
+        fillColor: overlayKind === 'shape' ? shapeFillColor : undefined,
         text: overlayKind === 'shape' ? '' : 'Edit text',
         fontSize: textFontSize,
         fontFamily: textFontFamily,
@@ -951,6 +954,24 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
       })
     }
   }, [selectedOverlayId, textColor, textFontFamily, textFontSize])
+
+  useEffect(() => {
+    const handleShapeFillChange = (event: Event) => {
+      const fillColor = (event as CustomEvent<{ color?: string }>).detail?.color
+      if (!fillColor || !selectedOverlayId) return
+
+      setOverlayTexts((previous) =>
+        previous.map((overlay) =>
+          overlay.id === selectedOverlayId && overlay.kind === 'shape'
+            ? { ...overlay, fillColor }
+            : overlay
+        )
+      )
+    }
+
+    window.addEventListener('editor-shape-fill-change', handleShapeFillChange)
+    return () => window.removeEventListener('editor-shape-fill-change', handleShapeFillChange)
+  }, [selectedOverlayId])
 
   const removeOverlayText = (id: string) => {
     setOverlayTexts((previous) => previous.filter((item) => item.id !== id))
@@ -1185,7 +1206,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
                           dangerouslySetInnerHTML={{
                             __html: getShapeSvg(overlay.shape || 'rectangle', {
                               stroke: overlay.color,
-                              fill: 'rgba(194, 65, 12, 0.08)',
+                              fill: overlay.fillColor || shapeFillColor,
                             }),
                           }}
                         />
@@ -1584,7 +1605,7 @@ export default function PowerPointEditor({ file }: PowerPointEditorProps) {
         title="SCREENS"
         items={slideItems}
         activeId={String(currentPage)}
-        accentColor="#dc2626"
+        accentColor={themeColor}
         side="right"
         onReorder={!file.viewOnly ? handleReorderSlides : undefined}
         footer={!file.viewOnly && !isRenderedSlide && (

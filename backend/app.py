@@ -1,22 +1,27 @@
-from flask import Flask, request, jsonify
+from flask import Flask, redirect, request, jsonify, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+from werkzeug.security import check_password_hash, generate_password_hash
 import base64
 import os
+import re
+import secrets
+import smtplib
+from email.message import EmailMessage
+from io import BytesIO
 import shutil
 import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 import cloudmersive_convert_api_client
 from cloudmersive_convert_api_client.rest import ApiException
 
 import fitz
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt, RGBColor
 
 try:
     from pdf2docx import Converter
@@ -40,6 +45,237 @@ CORS(app)
 
 ALLOWED_EXTENSIONS = {'pptx'}
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
+
+MONGODB_URI = os.environ.get('MONGODB_URI') or os.environ.get('MONGO_URI') or 'mongodb://localhost:27017'
+MONGODB_DB_NAME = os.environ.get('MONGODB_DB') or 'office_editor'
+_mongo_db = None
+_mongo_error = None
+
+
+def get_mongo_db():
+    """Lazy MongoDB connection so the editor can still boot without MongoDB."""
+    global _mongo_db, _mongo_error
+
+    if _mongo_db is not None:
+        return _mongo_db
+
+    try:
+        from pymongo import MongoClient, DESCENDING
+
+        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=1800)
+        client.admin.command('ping')
+        db = client[MONGODB_DB_NAME]
+        db.files.create_index('fileId', unique=True)
+        db.files.create_index([('uploadedAt', DESCENDING)])
+        db.users.create_index('userId', unique=True)
+        db.users.create_index('email', unique=True, sparse=True)
+        db.file_shares.create_index([('fileId', 1), ('sharedWith.userId', 1)], unique=True)
+        try:
+            db.file_shares.create_index('accessToken', unique=True, sparse=True)
+        except Exception as index_error:
+            if 'IndexKeySpecsConflict' not in str(index_error) and 'same name as the requested index' not in str(index_error):
+                raise
+            db.file_shares.drop_index('accessToken_1')
+            db.file_shares.create_index('accessToken', unique=True, sparse=True)
+        db.file_shares.create_index([('sharedWith.userId', 1), ('createdAt', DESCENDING)])
+        db.edit_events.create_index([('fileId', 1), ('createdAt', DESCENDING)])
+        db.edit_events.create_index([('createdAt', DESCENDING)])
+        _mongo_db = db
+        _mongo_error = None
+        return _mongo_db
+    except Exception as error:
+        _mongo_error = str(error)
+        return None
+
+
+def serialize_mongo_document(document):
+    if isinstance(document, list):
+        return [serialize_mongo_document(item) for item in document]
+    if isinstance(document, dict):
+        serialized = {}
+        for key, value in document.items():
+            serialized[key] = str(value) if key == '_id' else serialize_mongo_document(value)
+        return serialized
+    if isinstance(document, datetime):
+        return document.isoformat()
+    return document
+
+
+def get_request_user_agent():
+    user_agent = request.headers.get('User-Agent', '')
+    return user_agent[:240]
+
+
+def normalize_email(value):
+    email = str(value or '').strip().lower()
+    if not email:
+        return ''
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return ''
+    return email[:254]
+
+
+def get_actor_from_payload(data):
+    email = normalize_email(data.get('email') or data.get('userEmail') or data.get('editorEmail'))
+    display_name = str(
+        data.get('editorName')
+        or data.get('displayName')
+        or data.get('userName')
+        or data.get('userId')
+        or email
+        or 'Local user'
+    ).strip()
+    display_name = display_name[:160] or 'Local user'
+    user_id = str(data.get('userId') or email or display_name).strip()[:120] or 'local-user'
+    actor = {
+        'userId': user_id,
+        'displayName': display_name,
+    }
+    if email:
+        actor['email'] = email
+    return actor
+
+
+def ensure_user(db, actor):
+    now = datetime.now(timezone.utc)
+    user_doc = {
+        'userId': actor['userId'],
+        'displayName': actor['displayName'],
+        'updatedAt': now,
+        'lastSeenAt': now,
+    }
+    if actor.get('email'):
+        user_doc['email'] = actor['email']
+
+    db.users.update_one(
+        {'userId': actor['userId']},
+        {
+            '$set': user_doc,
+            '$setOnInsert': {'createdAt': now},
+        },
+        upsert=True,
+    )
+    return user_doc
+
+
+def get_public_base_url():
+    return (os.environ.get('APP_PUBLIC_URL') or os.environ.get('BACKEND_PUBLIC_URL') or request.host_url.rstrip('/')).rstrip('/')
+
+
+def get_frontend_public_url():
+    configured_url = os.environ.get('FRONTEND_PUBLIC_URL') or os.environ.get('APP_FRONTEND_URL')
+    if configured_url:
+        return configured_url.rstrip('/')
+
+    host = request.host.split(':')[0]
+    if host in ['localhost', '127.0.0.1']:
+        return f'{request.scheme}://{host}:5173'
+
+    return get_public_base_url()
+
+
+def save_file_content_to_gridfs(db, file_id, data, existing_file=None):
+    content_base64 = data.get('contentBase64')
+    if not content_base64:
+        return {}
+
+    try:
+        file_bytes = base64.b64decode(content_base64)
+    except Exception:
+        raise ValueError('contentBase64 is not valid base64')
+
+    try:
+        import gridfs
+        from bson import ObjectId
+    except Exception as error:
+        raise RuntimeError(f'GridFS is not available: {error}')
+
+    fs = gridfs.GridFS(db)
+    old_gridfs_id = (existing_file or {}).get('contentGridFsId')
+    if old_gridfs_id:
+        try:
+            fs.delete(ObjectId(old_gridfs_id))
+        except Exception:
+            pass
+
+    gridfs_id = fs.put(
+        file_bytes,
+        filename=str(data.get('fileName') or data.get('name') or file_id),
+        content_type=str(data.get('contentType') or 'application/octet-stream'),
+        fileId=file_id,
+    )
+    return {
+        'contentStorage': 'gridfs',
+        'contentGridFsId': str(gridfs_id),
+        'contentType': str(data.get('contentType') or 'application/octet-stream'),
+        'contentSize': len(file_bytes),
+    }
+
+
+def send_share_email(to_email, recipient_name, sender_name, file_name, access_url, permission):
+    smtp_host = os.environ.get('SMTP_HOST')
+    if not smtp_host:
+        return {'sent': False, 'configured': False, 'reason': 'SMTP_HOST is not configured'}
+
+    smtp_port = int(os.environ.get('SMTP_PORT') or 587)
+    smtp_user = os.environ.get('SMTP_USER')
+    smtp_password = os.environ.get('SMTP_PASSWORD')
+    smtp_from = os.environ.get('SMTP_FROM') or smtp_user
+    use_ssl = os.environ.get('SMTP_SSL', '').lower() == 'true'
+    use_tls = os.environ.get('SMTP_TLS', 'true').lower() != 'false'
+
+    if not smtp_from:
+        return {'sent': False, 'configured': False, 'reason': 'SMTP_FROM or SMTP_USER is required'}
+
+    message = EmailMessage()
+    message['Subject'] = f'{sender_name} shared {file_name} with you'
+    message['From'] = smtp_from
+    message['To'] = to_email
+    message.set_content(
+        f'Hello {recipient_name},\n\n'
+        f'{sender_name} shared "{file_name}" with you.\n'
+        f'Permission: {permission}.\n\n'
+        f'Open or download the file here:\n{access_url}\n'
+    )
+
+    try:
+        smtp_class = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
+        with smtp_class(smtp_host, smtp_port, timeout=10) as server:
+            if use_tls and not use_ssl:
+                server.starttls()
+            if smtp_user and smtp_password:
+                server.login(smtp_user, smtp_password)
+            server.send_message(message)
+        return {'sent': True, 'configured': True}
+    except Exception as error:
+        return {'sent': False, 'configured': True, 'reason': str(error)}
+
+
+def build_file_record(data):
+    now = datetime.now(timezone.utc)
+    file_id = str(data.get('fileId') or '').strip() or str(uuid.uuid4())
+    file_name = str(data.get('fileName') or data.get('name') or '').strip()
+
+    if not file_name:
+        return None, 'fileName is required'
+
+    actor = get_actor_from_payload(data)
+    return {
+        'fileId': file_id[:160],
+        'fileName': file_name[:260],
+        'fileType': str(data.get('fileType') or '')[:40],
+        'originalType': str(data.get('originalType') or '')[:40],
+        'workflow': str(data.get('workflow') or '')[:80],
+        'size': int(data.get('size') or 0),
+        'uploadedBy': actor,
+        'uploadedAt': now,
+        'updatedAt': now,
+        'edited': False,
+        'editCount': 0,
+        'lastEdit': None,
+        'ipAddress': request.remote_addr,
+        'userAgent': get_request_user_agent(),
+    }, None
 
 # Cloudmersive Configuration
 CLOUDMERSIVE_API_KEY = 'a0849081-22a5-4eba-aeb1-46c9d394fc47'
@@ -75,6 +311,8 @@ def find_libreoffice_executable():
 
 
 def _color_int_to_rgb(color_value):
+    from docx.shared import RGBColor
+
     try:
         if color_value is None:
             return RGBColor(0, 0, 0)
@@ -126,7 +364,9 @@ def _is_table_row(lines, page_width):
 
 def convert_pdf_to_docx_custom(pdf_path):
     """Enhanced PDF to DOCX conversion with improved formatting, lists, and structure detection."""
-    from docx.shared import Inches
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches, Pt
     from docx.enum.text import WD_LINE_SPACING
 
     doc = Document()
@@ -1172,6 +1412,699 @@ def pptx_to_word():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'}), 200
+
+
+def sanitize_user_for_response(user):
+    serialized = serialize_mongo_document(user)
+    if isinstance(serialized, dict):
+        serialized.pop('passwordHash', None)
+    return serialized
+
+
+def create_auth_session(user):
+    return {
+        'token': secrets.token_urlsafe(32),
+        'user': sanitize_user_for_response(user),
+    }
+
+
+@app.route('/api/auth/register', methods=['POST'])
+def register_account():
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get('email') or data.get('editorEmail'))
+    display_name = str(data.get('displayName') or data.get('editorName') or '').strip()[:160]
+    password = str(data.get('password') or '')
+
+    if not display_name:
+        return jsonify({'success': False, 'error': 'Name is required'}), 400
+    if not email:
+        return jsonify({'success': False, 'error': 'A valid email is required'}), 400
+    if len(password) < 6:
+        return jsonify({'success': False, 'error': 'Password must be at least 6 characters'}), 400
+
+    existing = db.users.find_one({'email': email})
+    if existing and existing.get('passwordHash'):
+        return jsonify({'success': False, 'error': 'An account with this email already exists'}), 409
+
+    now = datetime.now(timezone.utc)
+    user_doc = {
+        'userId': email[:120],
+        'displayName': display_name,
+        'email': email,
+        'passwordHash': generate_password_hash(password),
+        'updatedAt': now,
+        'lastSeenAt': now,
+    }
+    db.users.update_one(
+        {'email': email},
+        {
+            '$set': user_doc,
+            '$setOnInsert': {'createdAt': now},
+        },
+        upsert=True,
+    )
+    user = db.users.find_one({'email': email})
+    return jsonify({'success': True, **create_auth_session(user)}), 201
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_account():
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get('email') or data.get('editorEmail'))
+    password = str(data.get('password') or '')
+    if not email or not password:
+        return jsonify({'success': False, 'error': 'Email and password are required'}), 400
+
+    user = db.users.find_one({'email': email})
+    if not user or not user.get('passwordHash') or not check_password_hash(user['passwordHash'], password):
+        return jsonify({'success': False, 'error': 'Invalid email or password'}), 401
+
+    now = datetime.now(timezone.utc)
+    db.users.update_one({'email': email}, {'$set': {'lastSeenAt': now, 'updatedAt': now}})
+    user = db.users.find_one({'email': email})
+    return jsonify({'success': True, **create_auth_session(user)}), 200
+
+
+@app.route('/api/users', methods=['POST'])
+def create_user():
+    """Create or update an editor user in MongoDB."""
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    actor = get_actor_from_payload(data)
+    raw_email = data.get('email') or data.get('userEmail') or data.get('editorEmail')
+    if raw_email and not actor.get('email'):
+        return jsonify({'success': False, 'error': 'A valid email is required'}), 400
+    if not actor['displayName']:
+        return jsonify({'success': False, 'error': 'displayName is required'}), 400
+
+    ensure_user(db, actor)
+    user = db.users.find_one({'userId': actor['userId']})
+    return jsonify({
+        'success': True,
+        'user': sanitize_user_for_response(user),
+    }), 200
+
+
+@app.route('/api/users', methods=['GET'])
+def list_users():
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    try:
+        limit = min(max(int(request.args.get('limit', 100)), 1), 500)
+    except Exception:
+        limit = 100
+
+    cursor = db.users.find().sort('updatedAt', -1).limit(limit)
+    return jsonify({
+        'success': True,
+        'users': [sanitize_user_for_response(user) for user in cursor],
+    }), 200
+
+
+@app.route('/api/files', methods=['POST'])
+def create_file_record():
+    """Create or update the MongoDB record for an uploaded/opened file."""
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    file_record, validation_error = build_file_record(data)
+    if validation_error:
+        return jsonify({'success': False, 'error': validation_error}), 400
+
+    actor = file_record['uploadedBy']
+    ensure_user(db, actor)
+
+    file_id = file_record['fileId']
+    existing = db.files.find_one({'fileId': file_id})
+    now = datetime.now(timezone.utc)
+    try:
+        content_update = save_file_content_to_gridfs(db, file_id, data, existing)
+    except (ValueError, RuntimeError) as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
+
+    if existing:
+        update = {
+            'fileName': file_record['fileName'],
+            'fileType': file_record['fileType'],
+            'originalType': file_record['originalType'],
+            'workflow': file_record['workflow'],
+            'size': file_record['size'],
+            'updatedAt': now,
+            **content_update,
+        }
+        db.files.update_one({'fileId': file_id}, {'$set': update})
+    else:
+        file_record.update(content_update)
+        db.files.insert_one(file_record)
+
+    stored_file = db.files.find_one({'fileId': file_id})
+    return jsonify({
+        'success': True,
+        'file': serialize_mongo_document(stored_file),
+    }), 201 if not existing else 200
+
+
+@app.route('/api/files/<file_id>/content', methods=['PUT'])
+def update_file_content(file_id):
+    """Save updated file content to GridFS so all users can view the latest version."""
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    content_base64 = data.get('contentBase64')
+    if not content_base64:
+        return jsonify({'success': False, 'error': 'contentBase64 is required'}), 400
+
+    try:
+        content_update = save_file_content_to_gridfs(db, file_id, data, file_record)
+    except (ValueError, RuntimeError) as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
+
+    actor = get_actor_from_payload(data)
+    ensure_user(db, actor)
+    now = datetime.now(timezone.utc)
+
+    db.files.update_one(
+        {'fileId': file_id},
+        {
+            '$set': {
+                **content_update,
+                'updatedAt': now,
+                'edited': True,
+                'lastEditedAt': now,
+                'lastEditedBy': actor,
+            },
+            '$inc': {'editCount': 1},
+        },
+    )
+
+    stored_file = db.files.find_one({'fileId': file_id})
+    return jsonify({
+        'success': True,
+        'file': serialize_mongo_document(stored_file),
+    }), 200
+
+
+@app.route('/api/files/<file_id>/sender-share', methods=['GET'])
+def get_sender_access(file_id):
+    """Return the accessToken for the file's original uploader so they can open it via shared URL."""
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({'success': False, 'error': 'MongoDB is not available'}), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    # Find any share record for this file (sender's own token)
+    share = db.file_shares.find_one({'fileId': file_id}, sort=[('createdAt', 1)])
+    if share:
+        return jsonify({
+            'success': True,
+            'accessToken': share.get('accessToken'),
+            'accessUrl': share.get('accessUrl'),
+        }), 200
+
+    # No share exists yet — create a self-access token for the uploader
+    uploaded_by = file_record.get('uploadedBy', {})
+    if not uploaded_by.get('userId'):
+        return jsonify({'success': False, 'error': 'No uploader info found'}), 404
+
+    now = datetime.now(timezone.utc)
+    access_token = secrets.token_urlsafe(32)
+    access_url = f'{get_frontend_public_url()}/shared/{access_token}'
+    self_share = {
+        'fileId': file_id,
+        'fileName': file_record.get('fileName', ''),
+        'fileType': file_record.get('fileType', ''),
+        'permission': 'edit',
+        'accessToken': access_token,
+        'accessUrl': access_url,
+        'emailStatus': {'sent': False, 'configured': False},
+        'sharedBy': uploaded_by,
+        'sharedWith': uploaded_by,
+        'createdAt': now,
+        'updatedAt': now,
+    }
+    db.file_shares.update_one(
+        {'fileId': file_id, 'sharedWith.userId': uploaded_by['userId']},
+        {'$set': self_share, '$setOnInsert': {'firstSharedAt': now}},
+        upsert=True,
+    )
+    return jsonify({
+        'success': True,
+        'accessToken': access_token,
+        'accessUrl': access_url,
+    }), 201
+
+
+@app.route('/api/files', methods=['GET'])
+def list_file_records():
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    try:
+        limit = min(max(int(request.args.get('limit', 50)), 1), 200)
+    except Exception:
+        limit = 50
+
+    cursor = db.files.find().sort('uploadedAt', -1).limit(limit)
+    return jsonify({
+        'success': True,
+        'files': [serialize_mongo_document(file_record) for file_record in cursor],
+    }), 200
+
+
+@app.route('/api/files/<file_id>', methods=['GET'])
+def get_file_record(file_id):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    return jsonify({
+        'success': True,
+        'file': serialize_mongo_document(file_record),
+    }), 200
+
+
+@app.route('/api/files/<file_id>/shares', methods=['GET'])
+def get_file_shares(file_id):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    cursor = db.file_shares.find({'fileId': file_id}).sort('createdAt', -1)
+    return jsonify({
+        'success': True,
+        'fileId': file_id,
+        'shares': [serialize_mongo_document(share) for share in cursor],
+    }), 200
+
+
+@app.route('/api/users/<path:user_email>/shares', methods=['GET'])
+def get_user_share_history(user_email):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    email = normalize_email(user_email)
+    if not email:
+        return jsonify({'success': False, 'error': 'A valid user email is required'}), 400
+
+    received_cursor = db.file_shares.find({'sharedWith.email': email}).sort('updatedAt', -1).limit(100)
+    sent_cursor = db.file_shares.find({'sharedBy.email': email}).sort('updatedAt', -1).limit(100)
+    received = [serialize_mongo_document(share) for share in received_cursor]
+    sent = [serialize_mongo_document(share) for share in sent_cursor]
+
+    return jsonify({
+        'success': True,
+        'email': email,
+        'received': received,
+        'sent': sent,
+        'notificationCount': len(received),
+    }), 200
+
+
+@app.route('/api/files/<file_id>/shares', methods=['POST'])
+def share_file(file_id):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    shared_with_email = normalize_email(data.get('sharedWithEmail') or data.get('email') or data.get('sharedWith'))
+    shared_with_name = str(data.get('sharedWithName') or data.get('sharedWith') or shared_with_email or '').strip()
+    permission = str(data.get('permission') or 'view').strip().lower()
+
+    if not shared_with_email:
+        return jsonify({'success': False, 'error': 'A valid sharedWithEmail is required'}), 400
+    if permission not in ['view', 'edit']:
+        return jsonify({'success': False, 'error': 'permission must be view or edit'}), 400
+
+    now = datetime.now(timezone.utc)
+    actor = get_actor_from_payload(data)
+    ensure_user(db, actor)
+    shared_with = {
+        'userId': shared_with_email[:120],
+        'displayName': (shared_with_name or shared_with_email)[:160],
+        'email': shared_with_email,
+    }
+    ensure_user(db, shared_with)
+
+    existing_share = db.file_shares.find_one({'fileId': file_id, 'sharedWith.userId': shared_with['userId']})
+    access_token = existing_share.get('accessToken') if existing_share else secrets.token_urlsafe(32)
+    access_url = f'{get_frontend_public_url()}/shared/{access_token}'
+    email_status = send_share_email(
+        shared_with_email,
+        shared_with['displayName'],
+        actor['displayName'],
+        file_record.get('fileName', 'file'),
+        access_url,
+        permission,
+    )
+
+    share = {
+        'fileId': file_id[:160],
+        'fileName': file_record.get('fileName', ''),
+        'fileType': file_record.get('fileType', ''),
+        'permission': permission,
+        'accessToken': access_token,
+        'accessUrl': access_url,
+        'emailStatus': email_status,
+        'sharedBy': actor,
+        'sharedWith': shared_with,
+        'createdAt': existing_share.get('createdAt') if existing_share else now,
+        'updatedAt': now,
+    }
+
+    db.file_shares.update_one(
+        {'fileId': file_id, 'sharedWith.userId': shared_with['userId']},
+        {
+            '$set': share,
+            '$setOnInsert': {'firstSharedAt': now},
+        },
+        upsert=True,
+    )
+    stored_share = db.file_shares.find_one({'fileId': file_id, 'sharedWith.userId': shared_with['userId']})
+
+    event = {
+        'fileId': file_id[:160],
+        'fileName': file_record.get('fileName', ''),
+        'fileType': file_record.get('fileType', ''),
+        'action': f'share {permission}',
+        'editor': file_record.get('fileType', 'unknown'),
+        'userId': actor['userId'],
+        'editorName': actor['displayName'],
+        'metadata': {
+            'sharedWith': shared_with,
+            'permission': permission,
+            'accessUrl': access_url,
+            'emailStatus': email_status,
+        },
+        'createdAt': now,
+        'updatedAt': now,
+        'ipAddress': request.remote_addr,
+        'userAgent': get_request_user_agent(),
+    }
+    db.edit_events.insert_one(event)
+    db.files.update_one(
+        {'fileId': file_id},
+        {
+            '$set': {
+                'shared': True,
+                'lastSharedAt': now,
+                'lastSharedBy': actor,
+                'updatedAt': now,
+            },
+            '$inc': {'shareCount': 1},
+        },
+    )
+
+    return jsonify({
+        'success': True,
+        'share': serialize_mongo_document(stored_share),
+        'event': serialize_mongo_document(event),
+        'emailStatus': email_status,
+        'accessUrl': access_url,
+    }), 201
+
+
+@app.route('/shared/<access_token>', methods=['GET'])
+def shared_file_access_page(access_token):
+    return redirect(f'{get_frontend_public_url()}/shared/{access_token}', code=302)
+
+
+@app.route('/api/shared/<access_token>', methods=['GET'])
+def get_shared_file(access_token):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({'success': False, 'error': 'MongoDB is not available'}), 503
+
+    share = db.file_shares.find_one({'accessToken': access_token})
+    if share is None:
+        return jsonify({'success': False, 'error': 'Shared file link not found'}), 404
+
+    file_record = db.files.find_one({'fileId': share.get('fileId')})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+
+    content_base64 = ''
+    if file_record.get('contentGridFsId'):
+        try:
+            import gridfs
+            from bson import ObjectId
+            fs = gridfs.GridFS(db)
+            grid_file = fs.get(ObjectId(file_record['contentGridFsId']))
+            content_base64 = base64.b64encode(grid_file.read()).decode('utf-8')
+        except Exception as error:
+            return jsonify({'success': False, 'error': f'Could not load file content: {error}'}), 500
+
+    return jsonify({
+        'success': True,
+        'share': serialize_mongo_document(share),
+        'file': serialize_mongo_document(file_record),
+        'contentBase64': content_base64,
+        'downloadUrl': f'{get_public_base_url()}/api/shared/{access_token}/download',
+    }), 200
+
+
+@app.route('/api/shared/<access_token>/download', methods=['GET'])
+def download_shared_file(access_token):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({'success': False, 'error': 'MongoDB is not available'}), 503
+
+    share = db.file_shares.find_one({'accessToken': access_token})
+    if share is None:
+        return jsonify({'success': False, 'error': 'Shared file link not found'}), 404
+
+    file_record = db.files.find_one({'fileId': share.get('fileId')})
+    if file_record is None:
+        return jsonify({'success': False, 'error': 'File not found'}), 404
+    if not file_record.get('contentGridFsId'):
+        return jsonify({'success': False, 'error': 'File content is not stored for this file'}), 404
+
+    try:
+        import gridfs
+        from bson import ObjectId
+        fs = gridfs.GridFS(db)
+        grid_file = fs.get(ObjectId(file_record['contentGridFsId']))
+        data = grid_file.read()
+    except Exception as error:
+        return jsonify({'success': False, 'error': f'Could not load file content: {error}'}), 500
+
+    return send_file(
+        BytesIO(data),
+        mimetype=file_record.get('contentType') or 'application/octet-stream',
+        as_attachment=True,
+        download_name=file_record.get('fileName') or 'shared-file',
+    )
+
+
+@app.route('/api/edit-events', methods=['POST'])
+def create_edit_event():
+    """Record that a user changed or saved a file."""
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    data = request.get_json(silent=True) or {}
+    file_id = str(data.get('fileId') or '').strip()
+    file_name = str(data.get('fileName') or '').strip()
+    action = str(data.get('action') or 'edit').strip()[:80]
+
+    if not file_id or not file_name:
+        return jsonify({
+            'success': False,
+            'error': 'fileId and fileName are required',
+        }), 400
+
+    now = datetime.now(timezone.utc)
+    actor = get_actor_from_payload(data)
+    ensure_user(db, actor)
+    metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
+    event = {
+        'fileId': file_id[:160],
+        'fileName': file_name[:260],
+        'fileType': str(data.get('fileType') or '')[:40],
+        'action': action,
+        'editor': str(data.get('editor') or 'unknown')[:80],
+        'userId': actor['userId'],
+        'editorName': actor['displayName'],
+        'metadata': metadata,
+        'createdAt': now,
+        'updatedAt': now,
+        'ipAddress': request.remote_addr,
+        'userAgent': get_request_user_agent(),
+    }
+
+    result = db.edit_events.insert_one(event)
+    event['_id'] = result.inserted_id
+
+    file_update = {
+        'fileId': event['fileId'],
+        'fileName': event['fileName'],
+        'fileType': event['fileType'],
+        'updatedAt': now,
+        'edited': True,
+        'lastEdit': event,
+        'lastEditedAt': now,
+        'lastEditedBy': actor,
+    }
+    db.files.update_one(
+        {'fileId': event['fileId']},
+        {
+            '$set': file_update,
+            '$inc': {'editCount': 1},
+            '$setOnInsert': {
+                'uploadedAt': now,
+                'uploadedBy': actor,
+                'originalType': '',
+                'workflow': '',
+                'size': 0,
+                'ipAddress': request.remote_addr,
+                'userAgent': get_request_user_agent(),
+            },
+        },
+        upsert=True,
+    )
+
+    return jsonify({
+        'success': True,
+        'event': serialize_mongo_document(event),
+    }), 201
+
+
+@app.route('/api/files/<file_id>/edits', methods=['GET'])
+def get_file_edit_events(file_id):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    try:
+        limit = min(max(int(request.args.get('limit', 50)), 1), 200)
+    except Exception:
+        limit = 50
+
+    cursor = db.edit_events.find({'fileId': file_id}).sort('createdAt', -1).limit(limit)
+    events = [serialize_mongo_document(event) for event in cursor]
+    file_record = db.files.find_one({'fileId': file_id})
+
+    return jsonify({
+        'success': True,
+        'fileId': file_id,
+        'file': serialize_mongo_document(file_record),
+        'edited': len(events) > 0,
+        'events': events,
+        'lastEdit': events[0] if events else None,
+    }), 200
+
+
+@app.route('/api/files/<file_id>/edit-status', methods=['GET'])
+def get_file_edit_status(file_id):
+    db = get_mongo_db()
+    if db is None:
+        return jsonify({
+            'success': False,
+            'error': 'MongoDB is not available',
+            'details': _mongo_error,
+        }), 503
+
+    file_record = db.files.find_one({'fileId': file_id})
+    last_event = db.edit_events.find_one({'fileId': file_id}, sort=[('createdAt', -1)])
+
+    return jsonify({
+        'success': True,
+        'fileId': file_id,
+        'file': serialize_mongo_document(file_record),
+        'edited': last_event is not None,
+        'lastEdit': serialize_mongo_document(last_event),
+    }), 200
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

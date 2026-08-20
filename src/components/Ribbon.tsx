@@ -53,6 +53,9 @@ import {
   FileText,
   Columns,
   Languages,
+  CircleDot,
+  Hash,
+  BookOpen,
 } from 'lucide-react'
 import {
   PAGE_COLUMN_OPTIONS,
@@ -71,6 +74,7 @@ export interface RibbonActions {
   onOpen?: () => void
   onExport?: () => void | Promise<void>
   onPrint?: () => void | Promise<void>
+  onShare?: () => void
   onZoomIn?: () => void
   onZoomOut?: () => void
   onUndoLast?: () => void
@@ -389,7 +393,7 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
   const toolbarLanguage = normalizeEditorLanguage(selectedLanguage)
   const toolbarLanguageSettings = getEditorLanguageSettings(toolbarLanguage)
   const t = (label: string) => translateRibbon(toolbarLanguage, label)
-  const canInsertShapes = fileType !== 'xlsx' && fileType !== 'image'
+  const canInsertShapes = fileType !== 'image'
 
   const themeColor = themeColorOverride || (fileType
     ? getThemeForFileType(fileType as any)
@@ -541,6 +545,7 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
           <RibbonButton icon={<PenTool size={18} />} label={t('Draw')} active={activeTool === 'draw'} onClick={() => { setActiveTool('draw'); actions?.onSetTool?.('draw') }} />
           <RibbonButton icon={<Type size={18} />} label={t('Text')} active={activeTool === 'text'} onClick={() => { setActiveTool('text'); actions?.onSetTool?.('text') }} />
           <RibbonButton icon={<Eraser size={18} />} label={t('Erase')} active={activeTool === 'erase'} onClick={() => { setActiveTool('erase'); actions?.onSetTool?.('erase') }} />
+          <RadioButtonMenuButton themeColor={themeColor} />
         </RibbonGroup>
 
         <RibbonGroup label={t('Font')}>
@@ -627,7 +632,7 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
           />
         </RibbonGroup>
 
-        {(fileType === 'pdf' || fileType === 'pptx' || fileType === 'docx') && (
+        {(fileType === 'pdf' || fileType === 'pptx' || fileType === 'docx' || fileType === 'xlsx') && (
           <RibbonGroup label={t('Mise en page')}>
             <RibbonMenuButton<PageMarginPreset>
               icon={<Ruler size={18} />}
@@ -660,6 +665,8 @@ export default function Ribbon({ fileType, actions, themeColorOverride }: Ribbon
               options={PAGE_COLUMN_OPTIONS}
               onSelect={setPageColumns}
             />
+            <PageNumberMenuButton themeColor={themeColor} />
+            <SommaireMenuButton themeColor={themeColor} />
           </RibbonGroup>
         )}
 
@@ -1337,14 +1344,14 @@ function FileMenu({
         <FileMenuItem icon={<Home size={20} />} label="Accueil" active onClick={onClose} themeColor={themeColor} />
         <FileMenuItem icon={<FilePlus size={20} />} label="Nouveau" onClick={() => runAction(actions?.onOpen)} disabled={!actions?.onOpen} />
         <FileMenuItem icon={<FolderOpen size={20} />} label="Ouvrir" onClick={() => runAction(actions?.onOpen)} disabled={!actions?.onOpen} />
-        <FileMenuItem icon={<Share2 size={20} />} label="Partager" disabled />
+        <FileMenuItem icon={<Share2 size={20} />} label="Partager" onClick={() => runAction(actions?.onShare)} disabled={!actions?.onShare} />
 
         <div className="my-2 mx-6 h-px bg-white/25" />
 
         <FileMenuItem icon={<Info size={20} />} label="Informations" disabled />
         <FileMenuItem icon={<Save size={20} />} label="Enregistrer" onClick={() => runAction(actions?.onSave)} disabled={!actions?.onSave} />
         <FileMenuItem icon={<SaveAll size={20} />} label="Enregistrer sous" onClick={() => runAction(actions?.onSaveAs)} disabled={!actions?.onSaveAs} />
-        <FileMenuItem icon={<Printer size={20} />} label="Imprimer" onClick={() => runAction(onPrint)} disabled={!actions?.onPrint} />
+        <FileMenuItem icon={<Printer size={20} />} label="Imprimer" onClick={() => runAction(onPrint || actions?.onPrint)} />
         <FileMenuItem icon={<Download size={20} />} label="Exporter" onClick={() => runAction(actions?.onExport)} disabled={!actions?.onExport} />
         <FileMenuItem icon={<FileX size={20} />} label="Fermer" onClick={() => runAction(actions?.onLogout)} disabled={!actions?.onLogout} />
       </div>
@@ -1626,6 +1633,7 @@ function ShapeGalleryButton({
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 })
   const buttonRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   const openMenu = () => {
     const rect = buttonRef.current?.getBoundingClientRect()
@@ -1640,6 +1648,20 @@ function ShapeGalleryButton({
     onSelect(shape)
     setIsOpen(false)
   }
+
+  useEffect(() => {
+    if (!isOpen) return
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as Node | null
+      if (!target) return
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return
+      setIsOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true)
+  }, [isOpen])
 
   const renderSection = (title: string, group: 'recent' | 'lines') => (
     <div className="border-b border-white/20 pb-2 last:border-b-0 last:pb-1">
@@ -1689,7 +1711,7 @@ function ShapeGalleryButton({
         className={`group relative flex h-10 w-12 flex-col items-center justify-center rounded-lg px-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
           active ? 'bg-white/20 shadow-inner' : 'hover:bg-white/15 active:bg-white/20'
         }`}
-        title={disabled ? `${label} disabled for Excel` : label}
+        title={disabled ? `${label} disabled` : label}
       >
         <span
           className="flex h-5 w-7 items-center justify-center text-white"
@@ -1711,12 +1733,8 @@ function ShapeGalleryButton({
 
       {isOpen && !disabled && (
         <>
-          <button
-            className="fixed inset-0 z-40 cursor-default"
-            aria-label="Close shapes menu"
-            onClick={() => setIsOpen(false)}
-          />
           <div
+            ref={menuRef}
             className="fixed z-50 w-[374px] max-w-[calc(100vw-16px)] overflow-hidden rounded-[2px] border border-white/25 pb-1 text-white shadow-2xl"
             style={{
               left: menuPosition.left,
@@ -2076,6 +2094,368 @@ function RibbonGroup({
         {label}
       </div>
       <div className="flex items-center justify-center gap-1">{children}</div>
+    </div>
+  )
+}
+
+function RadioButtonMenuButton({ themeColor: _themeColor }: { themeColor?: string }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const insertRadio = (type: 'single' | 'yesno' | 'multiple') => {
+    setIsOpen(false)
+    window.dispatchEvent(
+      new CustomEvent('editor-insert-radio-button', {
+        detail: { type },
+      })
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex min-w-[70px] h-10 flex-col items-center justify-center gap-0.5 rounded-lg border border-white/20 bg-white/10 px-2 py-1 text-white hover:bg-white/20 transition"
+        title="Insérer un bouton radio (Radio button)"
+      >
+        <CircleDot size={16} />
+        <span className="text-[10px] font-medium leading-none">Radio</span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button className="fixed inset-0 z-40 cursor-default" onClick={() => setIsOpen(false)} />
+          <div
+            className="fixed z-50 w-60 rounded-md border bg-slate-900 text-white shadow-2xl p-2 flex flex-col gap-1 text-xs"
+            style={{
+              left: Math.max(8, Math.min((buttonRef.current?.getBoundingClientRect().left || 0), window.innerWidth - 250)),
+              top: (buttonRef.current?.getBoundingClientRect().bottom || 0) + 6,
+              borderColor: 'rgba(255,255,255,0.2)',
+            }}
+          >
+            <div className="px-2 py-1 font-semibold text-slate-300 border-b border-slate-700/60 mb-1 flex items-center gap-1.5 text-[11px]">
+              <CircleDot size={14} className="text-blue-400" />
+              Insérer des boutons radio
+            </div>
+            <button
+              onClick={() => insertRadio('single')}
+              className="flex items-center justify-between p-2 rounded hover:bg-white/10 text-left transition"
+            >
+              <div>
+                <div className="font-medium text-white text-[11px]">Bouton radio unique</div>
+                <div className="text-[9px] text-slate-400">Option simple avec libellé</div>
+              </div>
+              <span className="h-4 w-4 rounded-full border-2 border-blue-400 flex items-center justify-center">
+                <span className="h-1.5 w-1.5 rounded-full bg-blue-400" />
+              </span>
+            </button>
+
+            <button
+              onClick={() => insertRadio('yesno')}
+              className="flex items-center justify-between p-2 rounded hover:bg-white/10 text-left transition"
+            >
+              <div>
+                <div className="font-medium text-white text-[11px]">Groupe Oui / Non</div>
+                <div className="text-[9px] text-slate-400">Évaluation binaire</div>
+              </div>
+              <div className="flex gap-1 text-[9px]">
+                <span className="px-1 bg-emerald-500/20 text-emerald-300 rounded border border-emerald-500/40">Oui</span>
+                <span className="px-1 bg-rose-500/20 text-rose-300 rounded border border-rose-500/40">Non</span>
+              </div>
+            </button>
+
+            <button
+              onClick={() => insertRadio('multiple')}
+              className="flex items-center justify-between p-2 rounded hover:bg-white/10 text-left transition"
+            >
+              <div>
+                <div className="font-medium text-white text-[11px]">Choix multiples (A, B, C)</div>
+                <div className="text-[9px] text-slate-400 font-normal">Groupe de 3 options</div>
+              </div>
+              <div className="flex flex-col gap-0.5 text-[9px] text-slate-300">
+                <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full bg-blue-400"/> Opt 1</span>
+                <span className="flex items-center gap-1"><span className="h-1.5 w-1.5 rounded-full border border-slate-400"/> Opt 2</span>
+              </div>
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function PageNumberMenuButton({ themeColor: _themeColor }: { themeColor?: string }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const pageNumberConfig = useDocumentStore((state) => state.pageNumberConfig)
+  const setPageNumberConfig = useDocumentStore((state) => state.setPageNumberConfig)
+
+  const positions: Array<{ id: import('../store').PageNumberPosition; label: string }> = [
+    { id: 'top-left', label: 'Haut Gauche' },
+    { id: 'top-center', label: 'Haut Centre' },
+    { id: 'top-right', label: 'Haut Droite' },
+    { id: 'bottom-left', label: 'Bas Gauche' },
+    { id: 'bottom-center', label: 'Bas Centre' },
+    { id: 'bottom-right', label: 'Bas Droite' },
+  ]
+
+  const formats: Array<{ id: import('../store').PageNumberFormat; label: string; preview: string }> = [
+    { id: 'number', label: 'Chiffre simple', preview: '1, 2, 3' },
+    { id: 'page_x', label: 'Mot Page', preview: 'Page 1' },
+    { id: 'page_x_of_y', label: 'Page X sur Y', preview: 'Page 1 / 5' },
+    { id: 'dash', label: 'Tirets', preview: '- 1 -' },
+    { id: 'roman', label: 'Chiffres romains', preview: 'I, II, III' },
+    { id: 'alpha', label: 'Lettres', preview: 'A, B, C' },
+  ]
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={() => setIsOpen(!isOpen)}
+        className={`flex min-w-[76px] h-10 flex-col items-center justify-center gap-0.5 rounded-lg border px-2 py-1 text-white hover:bg-white/20 transition ${
+          pageNumberConfig.enabled ? 'border-amber-400 bg-white/25 shadow-sm' : 'border-white/20 bg-white/10'
+        }`}
+        title="Numéro de page (plusieurs options)"
+      >
+        <Hash size={16} className={pageNumberConfig.enabled ? 'text-amber-300' : ''} />
+        <span className="text-[10px] font-medium leading-none">N° de page</span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button className="fixed inset-0 z-40 cursor-default" onClick={() => setIsOpen(false)} />
+          <div
+            className="fixed z-50 w-72 rounded-md border bg-slate-900 text-white shadow-2xl p-3 flex flex-col gap-3 text-xs max-h-[85vh] overflow-y-auto"
+            style={{
+              left: Math.max(8, Math.min((buttonRef.current?.getBoundingClientRect().left || 0), window.innerWidth - 300)),
+              top: (buttonRef.current?.getBoundingClientRect().bottom || 0) + 6,
+              borderColor: 'rgba(255,255,255,0.2)',
+            }}
+          >
+            <div className="flex items-center justify-between border-b border-slate-700 pb-2">
+              <div className="font-semibold text-white flex items-center gap-1.5 text-sm">
+                <Hash size={16} className="text-amber-400" />
+                Numéro de page
+              </div>
+              <button
+                onClick={() => setPageNumberConfig({ enabled: !pageNumberConfig.enabled })}
+                className={`px-2 py-0.5 rounded text-[11px] font-medium border transition ${
+                  pageNumberConfig.enabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30'
+                    : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+              >
+                {pageNumberConfig.enabled ? 'Activé' : 'Désactivé'}
+              </button>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold text-slate-300 mb-1.5">Position (Emplacement)</div>
+              <div className="grid grid-cols-3 gap-1">
+                {positions.map((pos) => (
+                  <button
+                    key={pos.id}
+                    onClick={() => setPageNumberConfig({ position: pos.id, enabled: true })}
+                    className={`p-1.5 rounded text-[10px] font-medium border text-center transition ${
+                      pageNumberConfig.position === pos.id && pageNumberConfig.enabled
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm'
+                        : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
+                    }`}
+                  >
+                    {pos.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold text-slate-300 mb-1.5">Format de numérotation</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {formats.map((fmt) => (
+                  <button
+                    key={fmt.id}
+                    onClick={() => setPageNumberConfig({ format: fmt.id, enabled: true })}
+                    className={`p-1.5 rounded border text-left transition flex flex-col justify-between ${
+                      pageNumberConfig.format === fmt.id && pageNumberConfig.enabled
+                        ? 'bg-amber-500/20 border-amber-500/50 text-white'
+                        : 'bg-slate-800/60 border-slate-700/80 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="font-medium text-[11px]">{fmt.label}</span>
+                    <span className="text-[10px] text-amber-300/90 font-mono mt-0.5">{fmt.preview}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700/80 pt-2 flex flex-col gap-2">
+              <label className="flex items-center justify-between text-[11px] text-slate-300 cursor-pointer">
+                <span>Masquer sur la 1ère page</span>
+                <input
+                  type="checkbox"
+                  checked={pageNumberConfig.hideFirstPage}
+                  onChange={(e) => setPageNumberConfig({ hideFirstPage: e.target.checked })}
+                  className="rounded border-slate-700 bg-slate-800 text-amber-500 focus:ring-amber-400"
+                />
+              </label>
+
+              <div className="flex items-center justify-between text-[11px] text-slate-300">
+                <span>Numéro de départ</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={pageNumberConfig.startNumber}
+                  onChange={(e) => setPageNumberConfig({ startNumber: Math.max(0, parseInt(e.target.value) || 1) })}
+                  className="w-14 h-6 px-1.5 rounded border border-slate-700 bg-slate-800 text-white text-center"
+                />
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function SommaireMenuButton({ themeColor: _themeColor }: { themeColor?: string }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [position, setPosition] = useState<'top' | 'dedicated_page' | 'cursor'>('dedicated_page')
+  const [style, setStyle] = useState<'dotted' | 'modern' | 'minimal'>('dotted')
+  const buttonRef = useRef<HTMLButtonElement>(null)
+
+  const insertSommaire = (overrideStyle?: 'dotted' | 'modern' | 'minimal') => {
+    const finalStyle = overrideStyle || style
+    setIsOpen(false)
+    window.dispatchEvent(
+      new CustomEvent('editor-insert-sommaire', {
+        detail: { style: finalStyle, position },
+      })
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button
+        ref={buttonRef}
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex min-w-[70px] h-10 flex-col items-center justify-center gap-0.5 rounded-lg border border-white/20 bg-white/10 px-2 py-1 text-white hover:bg-white/20 transition"
+        title="Insérer un sommaire automatique"
+      >
+        <BookOpen size={16} />
+        <span className="text-[10px] font-medium leading-none">Sommaire</span>
+      </button>
+
+      {isOpen && (
+        <>
+          <button className="fixed inset-0 z-40 cursor-default" onClick={() => setIsOpen(false)} />
+          <div
+            className="fixed z-50 w-72 rounded-md border bg-slate-900 text-white shadow-2xl p-3 flex flex-col gap-2.5 text-xs max-h-[85vh] overflow-y-auto"
+            style={{
+              left: Math.max(8, Math.min((buttonRef.current?.getBoundingClientRect().left || 0), window.innerWidth - 300)),
+              top: (buttonRef.current?.getBoundingClientRect().bottom || 0) + 6,
+              borderColor: 'rgba(255,255,255,0.2)',
+            }}
+          >
+            <div className="px-1 py-1 font-semibold text-white border-b border-slate-700/60 pb-2 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-1.5 font-bold">
+                <BookOpen size={15} className="text-emerald-400" />
+                Insérer un sommaire
+              </div>
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded font-mono">Automatique</span>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold text-slate-300 mb-1">Emplacement dans le document</div>
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  onClick={() => setPosition('top')}
+                  className={`p-1.5 rounded text-[10px] font-medium border text-center transition ${
+                    position === 'top'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                  }`}
+                  title="En haut de la 1ère page"
+                >
+                  Début (Haut)
+                </button>
+                <button
+                  onClick={() => setPosition('dedicated_page')}
+                  className={`p-1.5 rounded text-[10px] font-medium border text-center transition ${
+                    position === 'dedicated_page'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                  }`}
+                  title="Page dédiée avec saut de page"
+                >
+                  Page dédiée
+                </button>
+                <button
+                  onClick={() => setPosition('cursor')}
+                  className={`p-1.5 rounded text-[10px] font-medium border text-center transition ${
+                    position === 'cursor'
+                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 shadow-sm'
+                      : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                  }`}
+                  title="Au niveau du curseur actuel"
+                >
+                  Au curseur
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[11px] font-semibold text-slate-300 mb-1">Style de sommaire</div>
+              <div className="flex flex-col gap-1">
+                <button
+                  onClick={() => { setStyle('dotted'); insertSommaire('dotted') }}
+                  className={`flex flex-col p-2 rounded border text-left transition gap-0.5 ${
+                    style === 'dotted' ? 'bg-slate-800 border-emerald-500/50' : 'bg-slate-800/60 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  <div className="font-medium text-white flex items-center justify-between text-[11px]">
+                    <span>Classique avec pointillé</span>
+                    <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1 rounded">Recommandé</span>
+                  </div>
+                  <div className="text-[9px] text-slate-400 font-mono">1. Titre ............................. Page 1</div>
+                </button>
+
+                <button
+                  onClick={() => { setStyle('modern'); insertSommaire('modern') }}
+                  className={`flex flex-col p-2 rounded border text-left transition gap-0.5 ${
+                    style === 'modern' ? 'bg-slate-800 border-emerald-500/50' : 'bg-slate-800/60 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  <div className="font-medium text-white text-[11px]">Style Moderne (Cartes)</div>
+                  <div className="text-[9px] text-slate-400">Cartes structurées avec badges de page</div>
+                </button>
+
+                <button
+                  onClick={() => { setStyle('minimal'); insertSommaire('minimal') }}
+                  className={`flex flex-col p-2 rounded border text-left transition gap-0.5 ${
+                    style === 'minimal' ? 'bg-slate-800 border-emerald-500/50' : 'bg-slate-800/60 border-slate-700 hover:bg-slate-800'
+                  }`}
+                >
+                  <div className="font-medium text-white text-[11px]">Style Minimaliste</div>
+                  <div className="text-[9px] text-slate-400">Liste arborescente discrète</div>
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700/60 pt-2 mt-1">
+              <button
+                onClick={() => insertSommaire()}
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold text-center transition flex items-center justify-center gap-1.5 text-xs shadow-md"
+              >
+                <BookOpen size={14} />
+                Générer / Replacer Sommaire
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }

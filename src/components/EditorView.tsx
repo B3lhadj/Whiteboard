@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../store'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, History, Share2, X } from 'lucide-react'
 import { Document as DocxDocument, Packer, PageOrientation as DocxPageOrientation, Paragraph, TextRun } from 'docx'
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { getEditorLanguageSettings, getPageDimensions, getThemeForFileType } from '../utils'
-import { getPageMargins } from '../pageLayout'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
 import Ribbon, {
   type BulletListValue,
@@ -20,6 +19,25 @@ import PDFEditor from './editors/PDFEditor'
 import ExcelEditor from './editors/ExcelEditor'
 import ImageEditor from './editors/ImageEditor'
 import WhiteboardEditor from './editors/WhiteboardEditor'
+import {
+  arrayBufferToBase64,
+  base64ToArrayBuffer,
+  createFileRecord,
+  getEditorEmail,
+  getEditorName,
+  getFileEditEvents,
+  getFileShares,
+  getShareEditorUrl,
+  getSenderShareAccess,
+  getUsers,
+  logFileEdit,
+  saveFileContent,
+  shareFile,
+  upsertUser,
+  type EditAuditEvent,
+  type FileShareRecord,
+  type UserRecord,
+} from '../services/editAudit'
 
 interface EditorViewProps {
   file: DocumentFile
@@ -37,11 +55,13 @@ type LetterCaseMode = 'upper' | 'lower'
 interface UndoHistoryEntry {
   label: string
   steps: number
-  kind: 'typing' | 'delete' | 'paste' | 'format' | 'other'
+  kind: 'typing' | 'delete' | 'paste' | 'format' | 'tool' | 'other'
   text?: string
   root?: HTMLElement
   beforeHtml?: string
   afterHtml?: string
+  applyUndo?: () => void
+  applyRedo?: () => void
   startedAt: number
   updatedAt: number
 }
@@ -55,6 +75,18 @@ export default function EditorView({ file }: EditorViewProps) {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 })
   const [undoHistory, setUndoHistory] = useState<UndoHistoryEntry[]>([])
   const [redoHistory, setRedoHistory] = useState<UndoHistoryEntry[]>([])
+  const [lastEdit, setLastEdit] = useState<EditAuditEvent | null>(null)
+  const [editEvents, setEditEvents] = useState<EditAuditEvent[]>([])
+  const [editStatusLoaded, setEditStatusLoaded] = useState(false)
+  const [showEditHistory, setShowEditHistory] = useState(false)
+  const [showShareDialog, setShowShareDialog] = useState(false)
+  const [shareRecipient, setShareRecipient] = useState('')
+  const [sharePermission, setSharePermission] = useState<'view' | 'edit'>('view')
+  const [shareResultMessage, setShareResultMessage] = useState('')
+  const [lastShareAccessUrl, setLastShareAccessUrl] = useState('')
+  const [shares, setShares] = useState<FileShareRecord[]>([])
+  const [shareUsers, setShareUsers] = useState<UserRecord[]>([])
+  const [isSharing, setIsSharing] = useState(false)
   const imageContainerRef = useRef<HTMLDivElement>(null)
   const suppressHistoryRef = useRef(false)
   const beforeInputSnapshotRef = useRef<{
@@ -62,6 +94,7 @@ export default function EditorView({ file }: EditorViewProps) {
     html: string
   } | null>(null)
   const editableHtmlSnapshotsRef = useRef<WeakMap<HTMLElement, string>>(new WeakMap())
+  const lastEditAuditAtRef = useRef(0)
 
   const clearCurrentFile = useDocumentStore((state) => state.clearCurrentFile)
   const editorHtml = useDocumentStore((state) => state.editorHtml)
@@ -70,10 +103,11 @@ export default function EditorView({ file }: EditorViewProps) {
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
   const setSelectedShape = useDocumentStore((state) => state.setSelectedShape)
   const setTextColor = useDocumentStore((state) => state.setTextColor)
+  const setShapeFillColor = useDocumentStore((state) => state.setShapeFillColor)
   const setTextFontFamily = useDocumentStore((state) => state.setTextFontFamily)
   const setTextFontSize = useDocumentStore((state) => state.setTextFontSize)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
-  const pageMarginPreset = useDocumentStore((state) => state.pageMarginPreset)
+  const pageMargins = useDocumentStore((state) => state.pageMargins)
   const pageSize = useDocumentStore((state) => state.pageSize)
   const pageColumns = useDocumentStore((state) => state.pageColumns)
   const displayType = (file.originalType || file.type) as DocumentFile['type']
@@ -86,11 +120,245 @@ export default function EditorView({ file }: EditorViewProps) {
     clearCurrentFile()
   }
 
+  const formatEditTime = (value?: string) => {
+    if (!value) return ''
+
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(date)
+  }
+
+  const formatEditMetadata = (event: EditAuditEvent) => {
+    const metadata = event.metadata || {}
+    const segments: string[] = []
+
+    if (typeof metadata.historyKind === 'string' && metadata.historyKind.trim()) {
+      const kindLabels: Record<string, string> = {
+        typing: 'Typing',
+        delete: 'Delete',
+        paste: 'Paste',
+        format: 'Format',
+        tool: 'Tool',
+        other: 'Edit',
+      }
+      const kind = metadata.historyKind.trim()
+      segments.push(kindLabels[kind] || kind)
+    }
+
+    if (typeof metadata.inputType === 'string' && metadata.inputType.trim()) {
+      segments.push(metadata.inputType)
+    }
+
+    if (typeof metadata.modifiedWord === 'string' && metadata.modifiedWord.trim()) {
+      segments.push(`word: ${metadata.modifiedWord.trim()}`)
+    }
+
+    return segments.join(' • ')
+  }
+
+  const getEditContent = (event: EditAuditEvent): string => {
+    const metadata = event.metadata || {}
+    if (typeof metadata.modifiedWord === 'string' && metadata.modifiedWord.trim()) {
+      return metadata.modifiedWord.trim()
+    }
+
+    if (typeof metadata.content === 'string' && metadata.content.trim()) {
+      const text = metadata.content.trim()
+      // If content is clean word text (like "dfsdfsdf"), return it directly
+      const isGenericSymbol = text.startsWith('↵') || text.startsWith('⌫') || text.startsWith('📋') || text.startsWith('🎨') || text.startsWith('✏️')
+      if (!isGenericSymbol) {
+        return text.length > 80 ? `${text.slice(0, 80)}…` : text
+      }
+    }
+
+    // Try finding the last modified word from DOM highlights as preferred content
+    try {
+      const highlights = document.querySelectorAll<HTMLElement>('.word-edit-highlight')
+      if (highlights.length > 0) {
+        const lastWord = highlights[highlights.length - 1].textContent?.trim()
+        if (lastWord) return lastWord
+      }
+    } catch {}
+
+    if (typeof metadata.content === 'string' && metadata.content.trim()) {
+      return metadata.content.trim()
+    }
+
+    return ''
+  }
+
+  const recordEditAudit = (
+    action: string,
+    metadata: Record<string, unknown> = {},
+    throttle = true
+  ) => {
+    const now = Date.now()
+    if (throttle && now - lastEditAuditAtRef.current < 2500) return
+
+    lastEditAuditAtRef.current = now
+    void logFileEdit({
+      fileId: file.id,
+      fileName: file.name,
+      fileType: displayType,
+      action,
+      editor: displayType || 'unknown',
+      metadata: {
+        ...metadata,
+        editorName: getEditorName(),
+        editorEmail: getEditorEmail(),
+      },
+    }).then((event) => {
+      if (event) {
+        setLastEdit(event)
+        setEditEvents((events) => [event, ...events.filter((item) => item._id !== event._id)].slice(0, 100))
+        setEditStatusLoaded(true)
+      }
+    })
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    setEditStatusLoaded(false)
+    setLastEdit(null)
+    setEditEvents([])
+    setShares([])
+
+    void getFileEditEvents(file.id).then((history) => {
+      if (cancelled) return
+
+      const events = history?.events || []
+      setEditEvents(events)
+      setLastEdit(history?.lastEdit || events[0] || null)
+      setEditStatusLoaded(true)
+    })
+
+    void getFileShares(file.id).then((nextShares) => {
+      if (!cancelled) setShares(nextShares)
+    })
+
+    void getUsers().then((users) => {
+      if (!cancelled) setShareUsers(users)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [file.id])
+
   const handleSave = async () => {
     setIsSaving(true)
-    await new Promise((resolve) => setTimeout(resolve, 800))
-    setIsSaving(false)
-    showSuccessToast(`${file.name} saved successfully!`, file.type)
+    try {
+      // Determine content to persist
+      let contentBase64: string | undefined
+
+      // First, try to ask the active editor if it can provide the serialized content
+      const editorProvidedContent = await new Promise<string | undefined>((resolve) => {
+        const handleReady = (event: Event) => {
+          const detail = (event as CustomEvent).detail
+          if (detail?.contentBase64) {
+            resolve(detail.contentBase64)
+          } else {
+            resolve(undefined)
+          }
+        }
+        window.addEventListener('editor-save-content-ready', handleReady, { once: true })
+        window.dispatchEvent(new CustomEvent('editor-request-save-content'))
+        
+        // Timeout if editor doesn't support this event
+        setTimeout(() => {
+          window.removeEventListener('editor-save-content-ready', handleReady)
+          resolve(undefined)
+        }, 500)
+      })
+
+      if (editorProvidedContent) {
+        contentBase64 = editorProvidedContent
+      } else if (editorHtml.trim() && file.type && ['docx', 'doc', 'pptx', 'ppt', 'whiteboard'].includes(file.type as any)) {
+        const blob = await buildDocxFromEditorHtml()
+        const buffer = await blob.arrayBuffer()
+        contentBase64 = arrayBufferToBase64(buffer)
+      } else if (file.content.byteLength > 0) {
+        contentBase64 = arrayBufferToBase64(file.content)
+      }
+
+      if (contentBase64) {
+        await saveFileContent(
+          file.id,
+          contentBase64,
+          getDocumentMimeType(),
+          file.name,
+          file.type
+        )
+      }
+
+      recordEditAudit('save', { size: file.size }, false)
+      showSuccessToast(`${file.name} saved to database!`, file.type)
+    } catch (err) {
+      console.error('Save failed:', err)
+      showErrorToast('Could not save the file to the database.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const handleShareFile = async () => {
+    const recipientEmail = shareRecipient.trim().toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(recipientEmail)) {
+      showErrorToast('Enter a valid email address to share with.')
+      return
+    }
+
+    setIsSharing(true)
+    setShareResultMessage('')
+    setLastShareAccessUrl('')
+    await upsertUser(recipientEmail, recipientEmail)
+    await createFileRecord({
+      fileId: file.id,
+      fileName: file.name,
+      fileType: file.type,
+      originalType: file.originalType,
+      workflow: file.workflow,
+      size: file.size,
+      contentBase64: file.content.byteLength > 0 ? arrayBufferToBase64(file.content) : undefined,
+      contentType: getDocumentMimeType(),
+    })
+    const result = await shareFile(file.id, recipientEmail, sharePermission, recipientEmail)
+    setIsSharing(false)
+
+    if (!result?.share) {
+      showErrorToast(result?.error || 'Could not share this file. Check MongoDB/backend connection.')
+      return
+    }
+
+    const sharedRecord = result.share
+    setLastShareAccessUrl(getShareEditorUrl(sharedRecord, result.accessUrl))
+    if (result.emailStatus?.sent) {
+      setShareResultMessage(`Email sent to ${recipientEmail}.`)
+    } else if (result.emailStatus && !result.emailStatus.configured) {
+      setShareResultMessage('Share saved. SMTP is not configured, so use the access link below for testing.')
+    } else if (result.emailStatus && !result.emailStatus.sent) {
+      setShareResultMessage(`Share saved, but email failed: ${result.emailStatus.reason || 'unknown error'}`)
+    }
+
+    setShareUsers((users) => [
+      sharedRecord.sharedWith,
+      ...users.filter((user) => user.userId !== sharedRecord.sharedWith.userId),
+    ])
+    setShares((current) => [
+      sharedRecord,
+      ...current.filter((share) => share._id !== sharedRecord._id),
+    ])
+    if (result.event) {
+      setLastEdit(result.event)
+      setEditEvents((events) => [result.event!, ...events.filter((event) => event._id !== result.event!._id)].slice(0, 100))
+      setEditStatusLoaded(true)
+    }
+    setShareRecipient('')
+    showSuccessToast(`${file.name} shared with ${recipientEmail}`, file.type)
   }
 
   const downloadBlob = (blob: Blob, filename: string) => {
@@ -146,7 +414,6 @@ export default function EditorView({ file }: EditorViewProps) {
   const buildDocxFromEditorHtml = async () => {
     const lines = getTextLinesFromHtml(editorHtml)
     const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
-    const pageMargins = getPageMargins(pageMarginPreset)
     const children = lines.length > 0
       ? lines.map((line) =>
           new Paragraph({
@@ -197,19 +464,55 @@ export default function EditorView({ file }: EditorViewProps) {
 
   const handleSaveAs = async () => {
     try {
+      const defaultName = getCopyFileName()
+      const userEnteredName = window.prompt('Enregistrer sous (Nom du fichier) :', defaultName)
+      if (userEnteredName === null) return // User cancelled
+
+      const targetName = userEnteredName.trim() || defaultName
+
+      // Check if the active editor provides updated content (PDF, PowerPoint, Excel, Word, etc.)
+      const editorProvidedContent = await new Promise<string | undefined>((resolve) => {
+        const handleReady = (event: Event) => {
+          const detail = (event as CustomEvent).detail
+          if (detail?.contentBase64) {
+            resolve(detail.contentBase64)
+          } else {
+            resolve(undefined)
+          }
+        }
+        window.addEventListener('editor-save-content-ready', handleReady, { once: true })
+        window.dispatchEvent(new CustomEvent('editor-request-save-content'))
+
+        setTimeout(() => {
+          window.removeEventListener('editor-save-content-ready', handleReady)
+          resolve(undefined)
+        }, 500)
+      })
+
+      if (editorProvidedContent) {
+        const buffer = base64ToArrayBuffer(editorProvidedContent)
+        const blob = new Blob([buffer], { type: getDocumentMimeType() })
+        downloadBlob(blob, targetName)
+        recordEditAudit('save as', { format: file.type, size: blob.size }, false)
+        showSuccessToast(`${targetName} enregistré avec succès`, file.type)
+        return
+      }
+
       if (file.type === 'docx' && editorHtml.trim()) {
         const blob = await buildDocxFromEditorHtml()
-        downloadBlob(blob, `${getBaseFileName(file.name)}-edited.docx`)
-        showSuccessToast(`${file.name} saved as DOCX file`, file.type)
+        downloadBlob(blob, targetName)
+        recordEditAudit('save as', { format: 'docx', size: blob.size }, false)
+        showSuccessToast(`${targetName} enregistré avec succès`, file.type)
         return
       }
 
       const blob = new Blob([file.content.slice(0)], { type: getDocumentMimeType() })
-      downloadBlob(blob, getCopyFileName())
-      showSuccessToast(`${file.name} saved as copy`, file.type)
+      downloadBlob(blob, targetName)
+      recordEditAudit('save as', { format: file.type, size: blob.size }, false)
+      showSuccessToast(`${targetName} enregistré avec succès`, file.type)
     } catch (err) {
       console.error('Save as failed:', err)
-      showErrorToast('Could not save the file.')
+      showErrorToast('Impossible d\'enregistrer le fichier.')
     }
   }
 
@@ -219,7 +522,6 @@ export default function EditorView({ file }: EditorViewProps) {
         const doc = await PDFDocument.create()
         const font = await doc.embedFont(StandardFonts.Helvetica)
         const pageDimensions = getPageDimensions(file.type, pageOrientation, pageSize)
-        const pageMargins = getPageMargins(pageMarginPreset)
         const pdfPageWidth = pxToPoints(pageDimensions.width)
         const pdfPageHeight = pxToPoints(pageDimensions.height)
         let currentPdfPage = doc.addPage([pdfPageWidth, pdfPageHeight])
@@ -276,6 +578,7 @@ export default function EditorView({ file }: EditorViewProps) {
         a.download = file.name.replace(/\.(docx|pdf)$/i, '') + '-edited.pdf'
         a.click()
         URL.revokeObjectURL(url)
+        recordEditAudit('export', { format: 'pdf', size: blob.size }, false)
       } catch (err) {
         console.error('Export failed:', err)
         showErrorToast('Could not export edited PDF.')
@@ -293,6 +596,7 @@ export default function EditorView({ file }: EditorViewProps) {
         a.download = file.name
         a.click()
         URL.revokeObjectURL(url)
+        recordEditAudit('export', { format: file.type, size: blob.size }, false)
         showSuccessToast(`${file.name} exported successfully!`, file.type)
       } catch (err) {
         console.error('Export failed:', err)
@@ -472,28 +776,79 @@ export default function EditorView({ file }: EditorViewProps) {
       updatedAt: now,
     }
 
-    if (event.inputType === 'insertText' && data) {
+    // Try to extract active word highlight or current selection text
+    let highlightText = ''
+    try {
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const node = sel.anchorNode
+        const el = (node?.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node?.parentElement)?.closest('.word-edit-highlight')
+        if (el) {
+          highlightText = el.textContent?.trim() || ''
+        }
+      }
+      if (!highlightText) {
+        const highlights = (root || document).querySelectorAll<HTMLElement>('.word-edit-highlight')
+        if (highlights.length > 0) {
+          highlightText = highlights[highlights.length - 1].textContent?.trim() || ''
+        }
+      }
+    } catch {}
+
+    const textPayload = data || highlightText
+
+    if (event.inputType === 'insertText') {
       return {
         label: 'Frappe',
         steps: 1,
         kind: 'typing',
-        text: data,
+        text: textPayload || 'Frappe',
         ...snapshotFields,
       }
     }
     if (event.inputType === 'insertParagraph') {
-      return { label: 'Frappe paragraphe', steps: 1, kind: 'other', ...snapshotFields }
+      return {
+        label: 'Frappe paragraphe',
+        steps: 1,
+        kind: 'other',
+        text: highlightText || '↵ Nouveau paragraphe',
+        ...snapshotFields,
+      }
     }
     if (event.inputType === 'deleteContentBackward' || event.inputType === 'deleteContentForward') {
-      return { label: 'Suppression', steps: 1, kind: 'delete', ...snapshotFields }
+      return {
+        label: 'Suppression',
+        steps: 1,
+        kind: 'delete',
+        text: highlightText || '⌫ Suppression',
+        ...snapshotFields,
+      }
     }
     if (event.inputType === 'insertFromPaste') {
-      return { label: 'Collage', steps: 1, kind: 'paste', ...snapshotFields }
+      return {
+        label: 'Collage',
+        steps: 1,
+        kind: 'paste',
+        text: data || highlightText || '📋 Collage',
+        ...snapshotFields,
+      }
     }
     if (event.inputType?.startsWith('format')) {
-      return { label: 'Correction automatique', steps: 1, kind: 'format', ...snapshotFields }
+      return {
+        label: 'Correction automatique',
+        steps: 1,
+        kind: 'format',
+        text: highlightText || '🎨 Format',
+        ...snapshotFields,
+      }
     }
-    return { label: 'Modification du document', steps: 1, kind: 'other', ...snapshotFields }
+    return {
+      label: 'Modification du document',
+      steps: 1,
+      kind: 'other',
+      text: textPayload || '✏️ Modification',
+      ...snapshotFields,
+    }
   }
 
   useEffect(() => {
@@ -552,6 +907,12 @@ export default function EditorView({ file }: EditorViewProps) {
       editableHtmlSnapshotsRef.current.set(root, root.innerHTML)
       beforeInputSnapshotRef.current = null
       setRedoHistory([])
+      recordEditAudit(entry.label, {
+        inputType: (event as InputEvent).inputType || 'input',
+        historyKind: entry.kind,
+        content: entry.text || '',
+        timestamp: new Date().toISOString(),
+      })
     }
 
     document.addEventListener('focusin', rememberEditableSnapshot, true)
@@ -564,7 +925,57 @@ export default function EditorView({ file }: EditorViewProps) {
       document.removeEventListener('beforeinput', handleBeforeInput, true)
       document.removeEventListener('input', handleEditableInput, true)
     }
-  }, [])
+  }, [file.id, file.name, displayType])
+
+  useEffect(() => {
+    const handleEditorHistorySnapshot = (event: Event) => {
+      if (suppressHistoryRef.current) return
+
+      const detail = (event as CustomEvent<{
+        root?: HTMLElement
+        beforeHtml?: string
+        afterHtml?: string
+        label?: string
+        applyUndo?: () => void
+        applyRedo?: () => void
+      }>).detail
+      const root = detail?.root
+      const hasHtmlSnapshot =
+        root && document.contains(root) && detail.beforeHtml !== undefined && detail.afterHtml !== undefined
+      const hasExternalSnapshot = detail?.applyUndo && detail?.applyRedo
+      if (!hasHtmlSnapshot && !hasExternalSnapshot) return
+      if (hasHtmlSnapshot && detail.beforeHtml === detail.afterHtml) return
+
+      const now = Date.now()
+      const entry: UndoHistoryEntry = {
+        label: detail.label || 'Modification de forme',
+        steps: 1,
+        kind: 'tool',
+        root,
+        beforeHtml: detail.beforeHtml,
+        afterHtml: detail.afterHtml,
+        applyUndo: detail.applyUndo,
+        applyRedo: detail.applyRedo,
+        startedAt: now,
+        updatedAt: now,
+      }
+
+      if (root && detail.afterHtml !== undefined) {
+        editableHtmlSnapshotsRef.current.set(root, detail.afterHtml)
+      }
+      beforeInputSnapshotRef.current = null
+      setUndoHistory((previous) => [entry, ...previous].slice(0, 12))
+      setRedoHistory([])
+      recordEditAudit(entry.label, {
+        historyKind: entry.kind,
+        hasDomSnapshot: Boolean(hasHtmlSnapshot),
+        timestamp: new Date().toISOString(),
+      })
+    }
+
+    window.addEventListener('editor-history-snapshot', handleEditorHistorySnapshot)
+    return () => window.removeEventListener('editor-history-snapshot', handleEditorHistorySnapshot)
+  }, [file.id, file.name, displayType])
 
   const runDocumentHistoryCommand = (command: 'undo' | 'redo', steps = 1) => {
     const root = restoreEditableSelection()
@@ -584,6 +995,17 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const restoreHistorySnapshot = (entry: UndoHistoryEntry, direction: 'undo' | 'redo') => {
+    const applyExternalSnapshot = direction === 'undo' ? entry.applyUndo : entry.applyRedo
+    if (applyExternalSnapshot) {
+      suppressHistoryRef.current = true
+      applyExternalSnapshot()
+      beforeInputSnapshotRef.current = null
+      window.setTimeout(() => {
+        suppressHistoryRef.current = false
+      }, 0)
+      return true
+    }
+
     const root = entry.root
     const html = direction === 'undo' ? entry.beforeHtml : entry.afterHtml
 
@@ -607,7 +1029,8 @@ export default function EditorView({ file }: EditorViewProps) {
     if (moved.length === 0) return
 
     const oldestEntry = moved[moved.length - 1]
-    const canRestoreSnapshots = moved.length > 0 && moved.every(
+    const canRestoreExternalSnapshots = moved.length > 0 && moved.every((entry) => entry.applyUndo)
+    const canRestoreHtmlSnapshots = moved.length > 0 && moved.every(
       (entry) =>
         entry.root &&
         entry.root === oldestEntry.root &&
@@ -615,7 +1038,9 @@ export default function EditorView({ file }: EditorViewProps) {
         document.contains(entry.root)
     )
 
-    if (canRestoreSnapshots) {
+    if (canRestoreExternalSnapshots) {
+      moved.forEach((entry) => restoreHistorySnapshot(entry, 'undo'))
+    } else if (canRestoreHtmlSnapshots) {
       restoreHistorySnapshot(oldestEntry, 'undo')
     } else {
       const browserSteps = moved.reduce((total, entry) => total + entry.steps, 0)
@@ -629,6 +1054,21 @@ export default function EditorView({ file }: EditorViewProps) {
   const handleUndoLast = () => {
     const latest = undoHistory[0]
     if (!latest) return
+
+    const canRestoreSnapshot =
+      latest.applyUndo ||
+      (
+        latest.kind === 'tool' &&
+        latest.root &&
+        latest.beforeHtml !== undefined &&
+        document.contains(latest.root)
+      )
+    if (canRestoreSnapshot) {
+      restoreHistorySnapshot(latest, 'undo')
+      setUndoHistory((previous) => previous.slice(1))
+      setRedoHistory((previous) => [latest, ...previous].slice(0, 12))
+      return
+    }
 
     const root = latest.root && document.contains(latest.root)
       ? latest.root
@@ -674,11 +1114,21 @@ export default function EditorView({ file }: EditorViewProps) {
     setRedoHistory((previous) => [redoEntry, ...previous].slice(0, 12))
   }
 
+  useEffect(() => {
+    const handleTriggerUndo = () => {
+      handleUndoLast()
+    }
+    window.addEventListener('editor-trigger-undo', handleTriggerUndo)
+    return () => window.removeEventListener('editor-trigger-undo', handleTriggerUndo)
+  }, [handleUndoLast])
+
   const handleRedo = () => {
     const [restored] = redoHistory
     if (!restored) return
 
-    const canRestoreSnapshot = restored?.root && restored.afterHtml !== undefined && document.contains(restored.root)
+    const canRestoreSnapshot =
+      restored.applyRedo ||
+      (restored.root && restored.afterHtml !== undefined && document.contains(restored.root))
 
     if (restored && canRestoreSnapshot) {
       restoreHistorySnapshot(restored, 'redo')
@@ -888,6 +1338,13 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const applyTextHighlight = (color: string) => {
+    setShapeFillColor(color)
+    window.dispatchEvent(
+      new CustomEvent('editor-shape-fill-change', {
+        detail: { color },
+      })
+    )
+
     const root = restoreEditableSelection()
     if (!root) return
 
@@ -1143,6 +1600,7 @@ export default function EditorView({ file }: EditorViewProps) {
     onOpen: handleBack,
     onExport: handleExport,
     onPrint: handlePrint,
+    onShare: () => setShowShareDialog(true),
     onZoomIn: () => setZoom(Math.min(300, zoom + 10)),
     onZoomOut: () => setZoom(Math.max(10, zoom - 10)),
     onUndoLast: handleUndoLast,
@@ -1277,6 +1735,24 @@ export default function EditorView({ file }: EditorViewProps) {
     onExport: () => {},
   }
 
+  const lastEditLabel = lastEdit
+    ? `${lastEdit.action} by ${lastEdit.editorName || lastEdit.userId || 'Unknown'}`
+    : editStatusLoaded
+      ? 'No recorded edits'
+      : 'Loading edit history...'
+  const lastEditTimeLabel = lastEdit ? formatEditTime(lastEdit.createdAt) : ''
+  const editCountLabel = editEvents.length === 1 ? '1 edit' : `${editEvents.length} edits`
+  const shareCountLabel = shares.length === 1 ? '1 shared user' : `${shares.length} shared users`
+  const filteredShareUsers = shareUsers
+    .filter((user) => {
+      const query = shareRecipient.trim().toLowerCase()
+      return (
+        user.displayName.toLowerCase().includes(query) ||
+        (user.email || '').toLowerCase().includes(query)
+      )
+    })
+    .slice(0, 5)
+
   return (
     <div className="w-full h-full flex flex-col" data-editor-shell="true" style={{ backgroundColor: displayType === 'image' ? '#111827' : 'white' }}>
       {displayType === 'image' ? (
@@ -1297,8 +1773,36 @@ export default function EditorView({ file }: EditorViewProps) {
 
             <div className="flex-1 px-2">
               <div className="font-semibold text-gray-800">{file.name}</div>
-              <div className="text-[11px] text-gray-500">{displayType?.toUpperCase()}</div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-500">
+                <span>{displayType?.toUpperCase()}</span>
+                <span className="text-gray-300">|</span>
+                <span>ID {file.id}</span>
+                <span className="text-gray-300">|</span>
+                <span>{lastEditLabel}</span>
+                {lastEditTimeLabel && (
+                  <>
+                    <span className="text-gray-300">|</span>
+                    <span>{lastEditTimeLabel}</span>
+                  </>
+                )}
+              </div>
             </div>
+            <button
+              onClick={() => setShowEditHistory(true)}
+              className="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 font-medium text-gray-700 shadow-sm hover:bg-gray-100"
+              title="View edit history"
+            >
+              <History size={16} />
+              {editCountLabel}
+            </button>
+            <button
+              onClick={() => setShowShareDialog(true)}
+              className="flex items-center gap-2 rounded border border-gray-200 bg-white px-3 py-2 font-medium text-gray-700 shadow-sm hover:bg-gray-100"
+              title="Share file"
+            >
+              <Share2 size={16} />
+              Share
+            </button>
           </div>
         </>
       )}
@@ -1317,8 +1821,36 @@ export default function EditorView({ file }: EditorViewProps) {
           </button>
           <div className="flex-1 px-2">
             <div className="font-semibold text-gray-200">{file.name}</div>
-            <div className="text-[11px] text-gray-400">{displayType?.toUpperCase()}</div>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-gray-400">
+              <span>{displayType?.toUpperCase()}</span>
+              <span className="text-gray-600">|</span>
+              <span>ID {file.id}</span>
+              <span className="text-gray-600">|</span>
+              <span>{lastEditLabel}</span>
+              {lastEditTimeLabel && (
+                <>
+                  <span className="text-gray-600">|</span>
+                  <span>{lastEditTimeLabel}</span>
+                </>
+              )}
+            </div>
           </div>
+          <button
+            onClick={() => setShowEditHistory(true)}
+            className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900 px-3 py-2 font-medium text-gray-200 shadow-sm hover:bg-gray-700"
+            title="View edit history"
+          >
+            <History size={16} />
+            {editCountLabel}
+          </button>
+          <button
+            onClick={() => setShowShareDialog(true)}
+            className="flex items-center gap-2 rounded border border-gray-700 bg-gray-900 px-3 py-2 font-medium text-gray-200 shadow-sm hover:bg-gray-700"
+            title="Share file"
+          >
+            <Share2 size={16} />
+            Share
+          </button>
         </div>
       )}
 
@@ -1356,6 +1888,256 @@ export default function EditorView({ file }: EditorViewProps) {
           <StatusBar file={file} />
         </div>
       )}
+      {showShareDialog && (
+        <div data-print-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md overflow-hidden rounded-md bg-white text-gray-900 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+              <div className="min-w-0">
+                <div className="font-semibold">Share file</div>
+                <div className="mt-1 truncate text-xs text-gray-500">{file.name} - {shareCountLabel}</div>
+              </div>
+              <button
+                onClick={() => setShowShareDialog(false)}
+                className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                title="Close share dialog"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <label className="block text-sm font-medium text-gray-700">
+                User email
+                <input
+                  value={shareRecipient}
+                  onChange={(event) => setShareRecipient(event.target.value)}
+                  className="mt-1 h-10 w-full rounded border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  placeholder="user@example.com"
+                  type="email"
+                />
+              </label>
+
+              {filteredShareUsers.length > 0 && (
+                <div className="-mt-2 flex flex-wrap gap-2">
+                  {filteredShareUsers.map((user) => (
+                    <button
+                      key={user.userId}
+                      onClick={() => setShareRecipient(user.email || user.userId)}
+                      className="rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                      type="button"
+                    >
+                      {user.email || user.displayName}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <label className="block text-sm font-medium text-gray-700">
+                Permission
+                <select
+                  value={sharePermission}
+                  onChange={(event) => setSharePermission(event.target.value as 'view' | 'edit')}
+                  className="mt-1 h-10 w-full rounded border border-gray-300 px-3 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                >
+                  <option value="view">Can view</option>
+                  <option value="edit">Can edit</option>
+                </select>
+              </label>
+
+              <button
+                onClick={handleShareFile}
+                disabled={isSharing}
+                className="flex h-10 w-full items-center justify-center gap-2 rounded bg-gray-900 px-4 text-sm font-semibold text-white hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Share2 size={16} />
+                {isSharing ? 'Sharing...' : 'Share'}
+              </button>
+
+              {(shareResultMessage || lastShareAccessUrl) && (
+                <div className="rounded border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-900">
+                  {shareResultMessage && <div>{shareResultMessage}</div>}
+                  {lastShareAccessUrl && (
+                    <a className="mt-1 block break-all font-medium underline" href={lastShareAccessUrl} target="_blank" rel="noreferrer">
+                      {lastShareAccessUrl}
+                    </a>
+                  )}
+                </div>
+              )}
+
+              <div className="border-t border-gray-200 pt-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Shared users</span>
+                  <button
+                    onClick={async () => {
+                      const result = await getSenderShareAccess(file.id)
+                      if (result?.accessUrl) {
+                        window.open(result.accessUrl, '_blank', 'noreferrer')
+                      } else {
+                        showErrorToast('No shared link available. Share the file first.')
+                      }
+                    }}
+                    className="flex items-center gap-1 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
+                    title="Open this file via shared link"
+                    type="button"
+                  >
+                    Open my shared link
+                  </button>
+                </div>
+                {shares.length === 0 ? (
+                  <div className="text-sm text-gray-500">No users yet.</div>
+                ) : (
+                  <div className="max-h-40 space-y-2 overflow-y-auto">
+                    {shares.map((share) => (
+                      <div key={share._id} className="flex items-center justify-between gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-gray-900">{share.sharedWith.email || share.sharedWith.displayName}</div>
+                          <div className="text-xs text-gray-500">by {share.sharedBy.displayName} · {share.permission === 'edit' ? 'Can edit' : 'Can view'}</div>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const url = getShareEditorUrl(share)
+                            if (url) window.open(url, '_blank', 'noreferrer')
+                            else showErrorToast('No access link for this share.')
+                          }}
+                          className="shrink-0 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                          type="button"
+                          title="Open file as this user"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+            </div>
+          </div>
+        </div>
+      )}
+      {showEditHistory && (() => {
+        const modalModifiedWords = Array.from(document.querySelectorAll<HTMLElement>('.word-edit-highlight'))
+          .map((el, i) => ({
+            id: `mod-word-${i}`,
+            text: el.textContent?.trim() || '',
+            by: el.dataset.modifiedBy || 'Inconnu',
+            at: el.dataset.modifiedAt || '',
+            element: el,
+          }))
+          .filter((w) => w.text.length > 0)
+
+        return (
+          <div data-print-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg overflow-hidden rounded-xl bg-white text-gray-900 shadow-2xl">
+              <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+                <div className="min-w-0">
+                  <div className="font-semibold text-base flex items-center gap-2">
+                    Edit history
+                    {modalModifiedWords.length > 0 && (
+                      <span className="rounded-full bg-yellow-400 px-2 py-0.5 text-xs font-bold text-yellow-950">
+                        {modalModifiedWords.length} mots modifiés
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 truncate text-xs text-gray-500">{file.name} - ID {file.id}</div>
+                </div>
+                <button
+                  onClick={() => setShowEditHistory(false)}
+                  className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                  title="Close edit history"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="max-h-[65vh] overflow-y-auto px-5 py-3 space-y-4">
+                {/* ── Section: Mots modifiés (Surlignés en jaune) ── */}
+                {modalModifiedWords.length > 0 && (
+                  <div className="rounded-xl border border-yellow-300/80 bg-yellow-50/70 p-3 shadow-sm">
+                    <div className="flex items-center justify-between gap-2 border-b border-yellow-200/80 pb-2 mb-2">
+                      <span className="text-xs font-bold text-yellow-900 flex items-center gap-1.5">
+                        ✏️ Mots modifiés dans le document
+                      </span>
+                      <span className="text-[10px] text-yellow-700 font-medium">
+                        {modalModifiedWords.length} surlignage{modalModifiedWords.length > 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto p-1">
+                      {modalModifiedWords.map((w) => (
+                        <button
+                          key={w.id}
+                          type="button"
+                          onClick={() => {
+                            setShowEditHistory(false)
+                            w.element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                            w.element.style.outline = '2px solid #f59e0b'
+                            setTimeout(() => { w.element.style.outline = '' }, 1400)
+                          }}
+                          className="group flex items-center gap-1 rounded bg-yellow-200/90 border border-yellow-400/60 px-2 py-0.5 text-xs font-semibold text-amber-950 transition-all hover:bg-yellow-300 hover:shadow-sm"
+                          title={`Modifié par ${w.by} — cliquer pour localiser`}
+                        >
+                          <span>{w.text}</span>
+                          <span className="text-[9px] font-normal text-yellow-700 group-hover:text-yellow-900">({w.by})</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Section: Historique des événements ── */}
+                <div>
+                  <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Activité récente</div>
+                  {editEvents.length === 0 ? (
+                    <div className="py-8 text-center text-sm text-gray-500">No recorded edits for this file.</div>
+                  ) : (
+                    <div className="space-y-2">
+                      {editEvents.map((event) => {
+                        const contentSnippet = getEditContent(event)
+                        const metaLabel = formatEditMetadata(event)
+                        return (
+                          <div key={event._id} className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-gray-300 transition-colors">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                {/* Action + kind badge */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-semibold text-gray-900">{event.action}</span>
+                                  {metaLabel && (
+                                    <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 uppercase tracking-wide">{metaLabel}</span>
+                                  )}
+                                </div>
+                                {/* Editor name */}
+                                <div className="mt-1 text-xs text-gray-500">
+                                  by <span className="font-medium text-gray-700">{event.editorName || event.userId || 'Unknown'}</span>
+                                </div>
+                                {/* Content snippet with yellow highlight styling */}
+                                {contentSnippet && (
+                                  <div className="mt-2 flex items-center gap-1.5">
+                                    <span className="text-[10px] font-bold text-amber-700 uppercase">Mot :</span>
+                                    <span
+                                      className="rounded border border-amber-300/80 px-2 py-0.5 font-mono text-xs font-semibold text-amber-950 shadow-2xs break-all"
+                                      style={{ background: 'rgba(250,204,21,0.35)' }}
+                                    >
+                                      &ldquo;{contentSnippet}&rdquo;
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                              {/* Time */}
+                              <div className="shrink-0 text-right">
+                                <div className="text-xs font-medium text-gray-500">{formatEditTime(event.createdAt)}</div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </div>
   )
 }

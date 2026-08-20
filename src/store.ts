@@ -3,6 +3,8 @@ import {
   DEFAULT_PAGE_COLUMNS,
   DEFAULT_PAGE_MARGIN_PRESET,
   getDefaultPageSizeForFileType,
+  getPageMargins,
+  type PageMargins,
   type PageColumnCount,
   type PageMarginPreset,
   type PageOrientation,
@@ -14,6 +16,18 @@ export type FileType = 'docx' | 'pptx' | 'xlsx' | 'pdf' | 'image' | 'whiteboard'
 export type ThemeColor = 'blue' | 'green' | 'red' | 'dark' | 'teal' | 'purple' | 'amber'
 export type ToolbarTool = 'select' | 'shape' | 'image' | 'draw' | 'text' | 'erase'
 export type ToastType = 'success' | 'error' | 'info'
+export type PageNumberPosition = 'top-left' | 'top-center' | 'top-right' | 'bottom-left' | 'bottom-center' | 'bottom-right'
+export type PageNumberFormat = 'number' | 'page_x' | 'page_x_of_y' | 'dash' | 'roman' | 'alpha'
+
+export interface PageNumberConfig {
+  enabled: boolean
+  position: PageNumberPosition
+  format: PageNumberFormat
+  hideFirstPage: boolean
+  startNumber: number
+  fontSize: number
+  color: string
+}
 
 export interface ToastMessage {
   id: string
@@ -47,6 +61,7 @@ export interface DocumentState {
   zoom: number
   pageOrientation: PageOrientation
   pageMarginPreset: PageMarginPreset
+  pageMargins: PageMargins
   pageSize: PageSizePreset
   pageColumns: PageColumnCount
   currentPage: number
@@ -56,15 +71,19 @@ export interface DocumentState {
   activeTool: ToolbarTool
   selectedShape: ShapeKind
   textColor: string
+  shapeFillColor: string
   textFontFamily: string
   textFontSize: number
   selectedLanguage: string
   toasts: ToastMessage[]
+  pageNumberConfig: PageNumberConfig
 
   // Actions
+  setPageNumberConfig: (config: Partial<PageNumberConfig>) => void
   setCurrentFile: (file: DocumentFile) => void
   setPageOrientation: (orientation: PageOrientation) => void
   setPageMarginPreset: (preset: PageMarginPreset) => void
+  setPageMargins: (margins: PageMargins) => void
   setPageSize: (size: PageSizePreset) => void
   setPageColumns: (columns: PageColumnCount) => void
   addRecentFile: (file: DocumentFile) => void
@@ -79,6 +98,7 @@ export interface DocumentState {
   setActiveTool: (tool: ToolbarTool) => void
   setSelectedShape: (shape: ShapeKind) => void
   setTextColor: (color: string) => void
+  setShapeFillColor: (color: string) => void
   setTextFontFamily: (font: string) => void
   setTextFontSize: (size: number) => void
   setSelectedLanguage: (language: string) => void
@@ -115,6 +135,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   zoom: 100,
   pageOrientation: 'portrait',
   pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+  pageMargins: getPageMargins(DEFAULT_PAGE_MARGIN_PRESET),
   pageSize: 'a4',
   pageColumns: DEFAULT_PAGE_COLUMNS,
   currentPage: 1,
@@ -124,10 +145,25 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   activeTool: 'select',
   selectedShape: 'rectangle',
   textColor: '#111827',
+  shapeFillColor: 'rgba(37, 99, 235, 0.08)',
   textFontFamily: 'Calibri',
   textFontSize: 16,
   selectedLanguage: 'English',
   toasts: [],
+  pageNumberConfig: {
+    enabled: false,
+    position: 'bottom-center',
+    format: 'number',
+    hideFirstPage: false,
+    startNumber: 1,
+    fontSize: 10,
+    color: '#666666',
+  },
+
+  setPageNumberConfig: (config) =>
+    set((state) => ({
+      pageNumberConfig: { ...state.pageNumberConfig, ...config },
+    })),
 
   setCurrentFile: (file) => {
     // Set initial orientation based on file type
@@ -138,6 +174,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       zoom: 100,
       pageOrientation: initialOrientation,
       pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+      pageMargins: getPageMargins(DEFAULT_PAGE_MARGIN_PRESET),
       pageSize: getDefaultPageSizeForFileType(file.type),
       pageColumns: DEFAULT_PAGE_COLUMNS,
     })
@@ -176,7 +213,8 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
 
   setCurrentPage: (page) => set({ currentPage: page }),
   setPageOrientation: (orientation) => set({ pageOrientation: orientation }),
-  setPageMarginPreset: (preset) => set({ pageMarginPreset: preset }),
+  setPageMarginPreset: (preset) => set({ pageMarginPreset: preset, pageMargins: getPageMargins(preset) }),
+  setPageMargins: (margins) => set({ pageMargins: margins }),
   setPageSize: (size) => set({ pageSize: size }),
   setPageColumns: (columns) => set({ pageColumns: columns }),
 
@@ -190,6 +228,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
   setSelectedShape: (shape) => set({ selectedShape: shape, activeTool: shape === 'text-box' ? 'text' : 'shape' }),
 
   setTextColor: (color) => set({ textColor: color }),
+  setShapeFillColor: (color) => set({ shapeFillColor: color }),
 
   setTextFontFamily: (font) => set({ textFontFamily: font }),
 
@@ -206,6 +245,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       currentPage: 1,
       pageOrientation: 'portrait',
       pageMarginPreset: DEFAULT_PAGE_MARGIN_PRESET,
+      pageMargins: getPageMargins(DEFAULT_PAGE_MARGIN_PRESET),
       pageSize: 'a4',
       pageColumns: DEFAULT_PAGE_COLUMNS,
       wordCount: 0,
@@ -213,6 +253,7 @@ export const useDocumentStore = create<DocumentState>((set, get) => ({
       editorHtml: '',
       activeTool: 'select',
       selectedShape: 'rectangle',
+      shapeFillColor: 'rgba(37, 99, 235, 0.08)',
       zoom: 100,
     })
   },

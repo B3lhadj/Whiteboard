@@ -31,6 +31,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
   const setActiveTool = useDocumentStore((state) => state.setActiveTool)
   const selectedShape = useDocumentStore((state) => state.selectedShape)
   const textColor = useDocumentStore((state) => state.textColor)
+  const shapeFillColor = useDocumentStore((state) => state.shapeFillColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
@@ -72,6 +73,16 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     setEditorHtml(html)
   }
 
+  const pushToolHistory = (label: string, beforeHtml: string, root: HTMLElement | null = editorRef.current) => {
+    if (!root) return
+    const afterHtml = root.innerHTML
+    window.dispatchEvent(
+      new CustomEvent('editor-history-snapshot', {
+        detail: { root, beforeHtml, afterHtml, label },
+      })
+    )
+  }
+
   const getEditorPoint = (event: React.PointerEvent<HTMLDivElement>) => {
     const container = editorRef.current
     if (!container) return { x: 24, y: 24 }
@@ -92,6 +103,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
   ) => {
     const container = editorRef.current
     if (!container) return null
+    const beforeHtml = container.innerHTML
 
     const element = document.createElement('div')
     element.className = `word-tool-object ${className}`
@@ -104,12 +116,16 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     element.innerHTML = html
     container.appendChild(element)
     syncWhiteboardState()
+    pushToolHistory('Insertion de forme', beforeHtml, container)
     return element
   }
 
   const selectToolObject = (object: HTMLElement | null) => {
     selectedToolObjectRef.current?.classList.remove('is-selected')
     selectedToolObjectRef.current = object
+    if (object?.classList.contains('word-shape-object')) {
+      object.style.setProperty('--word-shape-control-color', object.dataset.shapeStroke || textColor)
+    }
     object?.classList.add('is-selected')
   }
 
@@ -117,6 +133,9 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     `${svg}<span class="word-rotate-handle" contenteditable="false"></span><span class="word-resize-handle" contenteditable="false"></span>`
 
   const setShapeMarkup = (object: HTMLElement, shape: ShapeKind, color: string, fill: string) => {
+    object.dataset.shapeStroke = color
+    object.dataset.shapeFill = fill
+    object.style.setProperty('--word-shape-control-color', color)
     object.innerHTML = shapeMarkup(
       getShapeSvg(shape, {
         width: Math.max(1, object.offsetWidth),
@@ -137,6 +156,8 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     const initialWidth = object.offsetWidth
     const initialHeight = object.offsetHeight
     const scale = (zoom * 1.12) / 100 || 1
+    const root = editorRef.current
+    const beforeHtml = root?.innerHTML || ''
 
     const resize = (moveEvent: PointerEvent) => {
       const nextWidth = Math.max(36, initialWidth + (moveEvent.clientX - startX) / scale)
@@ -149,6 +170,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
       window.removeEventListener('pointermove', resize)
       window.removeEventListener('pointerup', stop)
       syncWhiteboardState()
+      pushToolHistory('Redimensionnement de forme', beforeHtml, root)
     }
 
     window.addEventListener('pointermove', resize)
@@ -164,6 +186,8 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     const initialLeft = parseFloat(object.style.left || '0')
     const initialTop = parseFloat(object.style.top || '0')
     const scale = (zoom * 1.12) / 100 || 1
+    const root = editorRef.current
+    const beforeHtml = root?.innerHTML || ''
 
     const move = (moveEvent: PointerEvent) => {
       object.style.left = `${initialLeft + (moveEvent.clientX - startX) / scale}px`
@@ -174,6 +198,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
       syncWhiteboardState()
+      pushToolHistory('Deplacement de forme', beforeHtml, root)
     }
 
     window.addEventListener('pointermove', move)
@@ -190,6 +215,8 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     const centerY = rect.top + rect.height / 2
     const initialRotation = parseFloat(object.dataset.rotation || '0')
     const startAngle = Math.atan2(event.clientY - centerY, event.clientX - centerX)
+    const root = editorRef.current
+    const beforeHtml = root?.innerHTML || ''
 
     const rotate = (moveEvent: PointerEvent) => {
       const currentAngle = Math.atan2(moveEvent.clientY - centerY, moveEvent.clientX - centerX)
@@ -203,6 +230,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
       window.removeEventListener('pointermove', rotate)
       window.removeEventListener('pointerup', stop)
       syncWhiteboardState()
+      pushToolHistory('Rotation de forme', beforeHtml, root)
     }
 
     window.addEventListener('pointermove', rotate)
@@ -226,7 +254,11 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
     }
 
     if (activeTool === 'select') {
-      if (selectedObject) beginMoveObject(event, selectedObject)
+      if (selectedObject) {
+        beginMoveObject(event, selectedObject)
+      } else {
+        selectToolObject(null)
+      }
       return
     }
 
@@ -237,8 +269,11 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
 
     if (activeTool === 'erase') {
       event.preventDefault()
+      const root = editorRef.current
+      const beforeHtml = root?.innerHTML || ''
       selectedObject?.remove()
       syncWhiteboardState()
+      pushToolHistory('Suppression de forme', beforeHtml, root)
       return
     }
 
@@ -246,15 +281,19 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
       event.preventDefault()
       const point = getEditorPoint(event)
       const shapeSize = getShapeSize(selectedShape)
+      const fill = shapeFillColor
       const shapeObject = createWhiteboardObject(
         'word-shape-object',
         point.x,
         point.y,
-        shapeMarkup(getShapeSvg(selectedShape, { stroke: textColor, fill: 'rgba(124, 58, 237, 0.08)' })),
+        shapeMarkup(getShapeSvg(selectedShape, { stroke: textColor, fill })),
         shapeSize
       )
       if (shapeObject) {
         shapeObject.dataset.shapeKind = selectedShape
+        shapeObject.dataset.shapeStroke = textColor
+        shapeObject.dataset.shapeFill = fill
+        shapeObject.style.setProperty('--word-shape-control-color', textColor)
         selectToolObject(shapeObject)
       }
       setActiveTool('select')
@@ -294,19 +333,56 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
   }
 
   useEffect(() => {
+    const handleConfirmShape = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== 'Escape') return
+
+      const object = selectedToolObjectRef.current
+      if (!object || !document.contains(object) || !object.classList.contains('word-shape-object')) return
+
+      const activeElement = document.activeElement
+      if (activeElement instanceof HTMLElement && activeElement.closest('.word-textbox-object')) return
+
+      event.preventDefault()
+      selectToolObject(null)
+      syncWhiteboardState()
+    }
+
+    window.addEventListener('keydown', handleConfirmShape)
+    return () => window.removeEventListener('keydown', handleConfirmShape)
+  }, [pageContent, currentPage])
+
+  useEffect(() => {
     const handleShapeColorChange = (event: Event) => {
       const color = (event as CustomEvent<{ color?: string }>).detail?.color
       const object = selectedToolObjectRef.current
       if (!color || !object || !document.contains(object) || !object.classList.contains('word-shape-object')) return
 
       const shape = (object.dataset.shapeKind || 'rectangle') as ShapeKind
-      setShapeMarkup(object, shape, color, 'rgba(124, 58, 237, 0.08)')
+      const beforeHtml = editorRef.current?.innerHTML || ''
+      setShapeMarkup(object, shape, color, object.dataset.shapeFill || shapeFillColor)
       syncWhiteboardState()
+      pushToolHistory('Couleur de forme', beforeHtml)
+    }
+
+    const handleShapeFillChange = (event: Event) => {
+      const fill = (event as CustomEvent<{ color?: string }>).detail?.color
+      const object = selectedToolObjectRef.current
+      if (!fill || !object || !document.contains(object) || !object.classList.contains('word-shape-object')) return
+
+      const shape = (object.dataset.shapeKind || 'rectangle') as ShapeKind
+      const beforeHtml = editorRef.current?.innerHTML || ''
+      setShapeMarkup(object, shape, object.dataset.shapeStroke || textColor, fill)
+      syncWhiteboardState()
+      pushToolHistory('Remplissage de forme', beforeHtml)
     }
 
     window.addEventListener('editor-shape-color-change', handleShapeColorChange)
-    return () => window.removeEventListener('editor-shape-color-change', handleShapeColorChange)
-  }, [pageContent, currentPage])
+    window.addEventListener('editor-shape-fill-change', handleShapeFillChange)
+    return () => {
+      window.removeEventListener('editor-shape-color-change', handleShapeColorChange)
+      window.removeEventListener('editor-shape-fill-change', handleShapeFillChange)
+    }
+  }, [pageContent, currentPage, shapeFillColor, textColor])
 
   const totalPages = Object.keys(pageContent).length || 1
   const safeCurrentPage = Math.max(1, Math.min(currentPage, totalPages))
@@ -380,7 +456,7 @@ export default function WhiteboardEditor({ file }: WhiteboardEditorProps) {
         title="PAGES"
         items={pageItems}
         activeId={String(safeCurrentPage)}
-        accentColor="#7c3aed"
+        accentColor={themeColor}
         side="right"
         onAddStep={handleAddPage}
       />

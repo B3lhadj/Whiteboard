@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { DocumentFile, useDocumentStore } from '../../store'
-import { AlertCircle, Type, Download, Trash2 } from 'lucide-react'
+import { AlertCircle, Type, Download, Trash2, AlignLeft, AlignCenter, AlignRight, LayoutTemplate } from 'lucide-react'
 import * as pdfjsLib from 'pdfjs-dist'
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib'
 import { showErrorToast } from '../../utils/toast'
@@ -8,10 +8,6 @@ import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
 import { getShapeSvg, type ShapeKind } from '../../shapes'
-
-interface PDFEditorProps {
-  file: DocumentFile
-}
 
 interface PdfAnnotation {
   id: string
@@ -22,6 +18,7 @@ interface PdfAnnotation {
   widthRatio?: number
   heightRatio?: number
   shape?: ShapeKind
+  fillColor?: string
   text: string
   fontSize: number
   fontFamily: string
@@ -87,6 +84,22 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString()
 
+interface HeaderFooterConfig {
+  enabled: boolean
+  text: string
+  align: 'left' | 'center' | 'right'
+  fontSize: number
+  color: string
+  applyToAll: boolean
+}
+
+const DEFAULT_HEADER: HeaderFooterConfig = { enabled: false, text: '', align: 'center', fontSize: 10, color: '#555555', applyToAll: true }
+const DEFAULT_FOOTER: HeaderFooterConfig = { enabled: false, text: '', align: 'center', fontSize: 10, color: '#555555', applyToAll: true }
+
+interface PDFEditorProps {
+  file: DocumentFile
+}
+
 export default function PDFEditor({ file }: PDFEditorProps) {
   const [pdfDoc, setPdfDoc] = useState<any>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -100,6 +113,9 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const [viewerWidth, setViewerWidth] = useState(900)
   const [pageContentSize, setPageContentSize] = useState({ width: 0, height: 0 })
   const [pageCanvasSize, setPageCanvasSize] = useState({ width: 0, height: 0 })
+  const [showHeaderFooterPanel, setShowHeaderFooterPanel] = useState(false)
+  const [header, setHeader] = useState<HeaderFooterConfig>(DEFAULT_HEADER)
+  const [footer, setFooter] = useState<HeaderFooterConfig>(DEFAULT_FOOTER)
   const viewerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const canvasContainerRef = useRef<HTMLDivElement>(null)
@@ -113,12 +129,14 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const activeTool = useDocumentStore((state) => state.activeTool)
   const selectedShape = useDocumentStore((state) => state.selectedShape)
   const textColor = useDocumentStore((state) => state.textColor)
+  const shapeFillColor = useDocumentStore((state) => state.shapeFillColor)
   const textFontFamily = useDocumentStore((state) => state.textFontFamily)
   const textFontSize = useDocumentStore((state) => state.textFontSize)
   const addPage = useDocumentStore((state) => state.addPage)
   const updatePageOrder = useDocumentStore((state) => state.updatePageOrder)
   const toggleViewMode = useDocumentStore((state) => state.toggleViewMode)
   const pageOrientation = useDocumentStore((state) => state.pageOrientation)
+  const pageNumberConfig = useDocumentStore((state) => state.pageNumberConfig)
 
   const pageOrder = currentFile?.pageOrder || []
   const viewOnly = currentFile?.viewOnly || false
@@ -265,7 +283,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
             const isLandscapeBlank = pageOrientation === 'landscape'
             const baseWidth = isLandscapeBlank ? 900 : 600
             const baseHeight = isLandscapeBlank ? 600 : 800
-            const fitScale = Math.min(1.6, Math.max(0.45, availablePageWidth / baseWidth))
+            const fitScale = Math.min(2.25, Math.max(0.45, availablePageWidth / baseWidth))
             const displayWidth = Math.floor(baseWidth * fitScale * zoomScale)
             const displayHeight = Math.floor(baseHeight * fitScale * zoomScale)
             const displayCanvasWidth = displayWidth + rightPageGutter
@@ -294,7 +312,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         if (isDisposed) return
 
         const baseViewport = page.getViewport({ scale: 1, rotation })
-        const fitScale = Math.min(1.6, Math.max(0.45, availablePageWidth / baseViewport.width))
+        const fitScale = Math.min(2.25, Math.max(0.45, availablePageWidth / baseViewport.width))
         const displayScale = fitScale * Math.max(0.25, zoom / 100)
         const pixelRatio = window.devicePixelRatio || 1
         const viewport = page.getViewport({ scale: displayScale * pixelRatio, rotation })
@@ -382,6 +400,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       widthRatio: annotationKind === 'shape' ? Math.min(160 / contentWidth, 0.28) : undefined,
       heightRatio: annotationKind === 'shape' ? Math.min(96 / contentHeight, 0.18) : undefined,
       shape: annotationKind === 'shape' ? selectedShape : undefined,
+      fillColor: annotationKind === 'shape' ? shapeFillColor : undefined,
       text: annotationKind === 'shape' ? '' : 'Edit me',
       fontSize: textFontSize,
       fontFamily: textFontFamily,
@@ -415,6 +434,24 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       })
     }
   }, [selectedAnnotationId, textColor, textFontFamily, textFontSize])
+
+  useEffect(() => {
+    const handleShapeFillChange = (event: Event) => {
+      const fillColor = (event as CustomEvent<{ color?: string }>).detail?.color
+      if (!fillColor || !selectedAnnotationId) return
+
+      setAnnotations((previous) =>
+        previous.map((annotation) =>
+          annotation.id === selectedAnnotationId && annotation.kind === 'shape'
+            ? { ...annotation, fillColor }
+            : annotation
+        )
+      )
+    }
+
+    window.addEventListener('editor-shape-fill-change', handleShapeFillChange)
+    return () => window.removeEventListener('editor-shape-fill-change', handleShapeFillChange)
+  }, [selectedAnnotationId])
 
   useEffect(() => {
     const handleListCommand = (event: Event) => {
@@ -541,6 +578,21 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     return { r, g, b }
   }
 
+  const getPdfFillColor = (color: string | undefined) => {
+    if (!color || color === 'transparent') return undefined
+    const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i)
+    if (rgbMatch) {
+      return rgb(
+        Number(rgbMatch[1]) / 255,
+        Number(rgbMatch[2]) / 255,
+        Number(rgbMatch[3]) / 255
+      )
+    }
+
+    const parsed = hexToRgb(color)
+    return rgb(parsed.r, parsed.g, parsed.b)
+  }
+
   const getPdfStandardFont = (fontFamily: string) => {
     if (fontFamily.includes('Times') || fontFamily === 'Georgia' || fontFamily === 'Cambria') {
       return StandardFonts.TimesRoman
@@ -585,7 +637,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         yScale: shapeHeight / 2,
         borderColor: strokeColor,
         borderWidth: 2,
-        color: rgb(0.93, 0.96, 1),
+        color: getPdfFillColor(annotation.fillColor) || rgb(0.93, 0.96, 1),
       })
       return
     }
@@ -611,69 +663,145 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       height: shapeHeight,
       borderColor: strokeColor,
       borderWidth: 2,
-      color: rgb(0.93, 0.96, 1),
+      color: getPdfFillColor(annotation.fillColor) || rgb(0.93, 0.96, 1),
     })
+  }
+
+  const resolveHeaderFooterText = (cfg: HeaderFooterConfig, pageNumber: number, totalPages: number) =>
+    cfg.text
+      .replace(/\{page\}/gi, String(pageNumber))
+      .replace(/\{total\}/gi, String(totalPages))
+      .replace(/\{date\}/gi, new Date().toLocaleDateString())
+
+  const buildEditedPdfBytes = async () => {
+    if (!pdfSourceBuffer || pdfSourceBuffer.byteLength === 0) {
+      throw new Error('No PDF source data available. Please re-upload the PDF.')
+    }
+
+    const sourceDoc = await PDFDocument.load(pdfSourceBuffer)
+    const outDoc = await PDFDocument.create()
+    const embeddedFonts = new Map<string, Awaited<ReturnType<typeof outDoc.embedFont>>>()
+    const getEmbeddedFont = async (fontFamily: string) => {
+      const standardFont = getPdfStandardFont(fontFamily)
+      if (!embeddedFonts.has(standardFont)) {
+        embeddedFonts.set(standardFont, await outDoc.embedFont(standardFont))
+      }
+      return embeddedFonts.get(standardFont)!
+    }
+
+    const hFont = await getEmbeddedFont('Helvetica')
+    const totalPages = pageOrder.length
+
+    for (let i = 0; i < pageOrder.length; i++) {
+      const originalIndex = pageOrder[i]
+      let page
+
+      if (originalIndex === -1) {
+        page = outDoc.addPage(pageOrientation === 'landscape' ? [842, 595] : [595, 842])
+      } else {
+        const [copiedPage] = await outDoc.copyPages(sourceDoc, [originalIndex])
+        page = outDoc.addPage(copiedPage)
+      }
+
+      const { width, height } = page.getSize()
+      const margin = 28
+      const pageNumber = i + 1
+
+      // Draw header
+      if (header.enabled && header.text.trim()) {
+        const text = resolveHeaderFooterText(header, pageNumber, totalPages)
+        const sz = header.fontSize
+        const textWidth = hFont.widthOfTextAtSize(text, sz)
+        const hColor = hexToRgb(header.color)
+        const x = header.align === 'center'
+          ? (width - textWidth) / 2
+          : header.align === 'right'
+            ? width - margin - textWidth
+            : margin
+        page.drawText(text, { x, y: height - margin, size: sz, font: hFont, color: rgb(hColor.r, hColor.g, hColor.b) })
+        // separator line
+        page.drawLine({ start: { x: margin, y: height - margin - sz - 4 }, end: { x: width - margin, y: height - margin - sz - 4 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) })
+      }
+
+      // Draw footer
+      if (footer.enabled && footer.text.trim()) {
+        const text = resolveHeaderFooterText(footer, pageNumber, totalPages)
+        const sz = footer.fontSize
+        const textWidth = hFont.widthOfTextAtSize(text, sz)
+        const fColor = hexToRgb(footer.color)
+        const x = footer.align === 'center'
+          ? (width - textWidth) / 2
+          : footer.align === 'right'
+            ? width - margin - textWidth
+            : margin
+        page.drawLine({ start: { x: margin, y: margin + sz + 4 }, end: { x: width - margin, y: margin + sz + 4 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) })
+        page.drawText(text, { x, y: margin, size: sz, font: hFont, color: rgb(fColor.r, fColor.g, fColor.b) })
+      }
+
+      // Draw Page Numbers from pageNumberConfig
+      if (pageNumberConfig.enabled) {
+        if (!(pageNumberConfig.hideFirstPage && pageNumber === 1)) {
+          const numVal = pageNumber + (pageNumberConfig.startNumber - 1)
+          let numStr = String(numVal)
+          if (pageNumberConfig.format === 'page_x') numStr = `Page ${numVal}`
+          else if (pageNumberConfig.format === 'page_x_of_y') numStr = `Page ${numVal} / ${totalPages}`
+          else if (pageNumberConfig.format === 'dash') numStr = `- ${numVal} -`
+          else if (pageNumberConfig.format === 'roman') {
+            const r = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
+            numStr = r[numVal - 1] || String(numVal)
+          } else if (pageNumberConfig.format === 'alpha') {
+            numStr = String.fromCharCode(65 + ((numVal - 1) % 26))
+          }
+
+          const sz = pageNumberConfig.fontSize || 10
+          const textWidth = hFont.widthOfTextAtSize(numStr, sz)
+          const pColor = hexToRgb(pageNumberConfig.color || '#666666')
+          const isTop = pageNumberConfig.position.startsWith('top')
+          const isRight = pageNumberConfig.position.endsWith('right')
+          const isCenter = pageNumberConfig.position.endsWith('center')
+
+          const x = isCenter ? (width - textWidth) / 2 : isRight ? width - margin - textWidth : margin
+          const y = isTop ? height - margin : margin
+
+          page.drawText(numStr, { x, y, size: sz, font: hFont, color: rgb(pColor.r, pColor.g, pColor.b) })
+        }
+      }
+
+      // Find annotations that belong to this position in the new document
+      const posInNewDoc = i + 1
+      const relevantAnnotations = annotations.filter((a) => a.page === posInNewDoc)
+
+      for (const annotation of relevantAnnotations) {
+        if (annotation.kind === 'shape') {
+          drawPdfShape(page, annotation)
+          continue
+        }
+        if (!annotation.text.trim()) continue
+        const x = annotation.xRatio * width
+        const y = height - annotation.yRatio * height - annotation.fontSize
+        const color = hexToRgb(annotation.color)
+        const font = await getEmbeddedFont(annotation.fontFamily)
+        const lineHeight = annotation.fontSize * 1.25
+
+        annotation.text.split(/\r?\n/).forEach((line, lineIndex) => {
+          page.drawText(line || ' ', {
+            x,
+            y: y - lineIndex * lineHeight,
+            size: annotation.fontSize,
+            font,
+            color: rgb(color.r, color.g, color.b),
+          })
+        })
+      }
+    }
+
+    return await outDoc.save()
   }
 
   const handleExportEditedPdf = async () => {
     try {
       setIsExporting(true)
-      if (!pdfSourceBuffer || pdfSourceBuffer.byteLength === 0) {
-        throw new Error('No PDF source data available. Please re-upload the PDF.')
-      }
-
-      const sourceDoc = await PDFDocument.load(pdfSourceBuffer)
-      const outDoc = await PDFDocument.create()
-      const embeddedFonts = new Map<string, Awaited<ReturnType<typeof outDoc.embedFont>>>()
-      const getEmbeddedFont = async (fontFamily: string) => {
-        const standardFont = getPdfStandardFont(fontFamily)
-        if (!embeddedFonts.has(standardFont)) {
-          embeddedFonts.set(standardFont, await outDoc.embedFont(standardFont))
-        }
-        return embeddedFonts.get(standardFont)!
-      }
-
-      for (let i = 0; i < pageOrder.length; i++) {
-        const originalIndex = pageOrder[i]
-        let page
-
-        if (originalIndex === -1) {
-          page = outDoc.addPage(pageOrientation === 'landscape' ? [842, 595] : [595, 842])
-        } else {
-          const [copiedPage] = await outDoc.copyPages(sourceDoc, [originalIndex])
-          page = outDoc.addPage(copiedPage)
-        }
-
-        // Find annotations that belong to this position in the new document
-        const posInNewDoc = i + 1
-        const relevantAnnotations = annotations.filter((a) => a.page === posInNewDoc)
-
-        for (const annotation of relevantAnnotations) {
-          if (annotation.kind === 'shape') {
-            drawPdfShape(page, annotation)
-            continue
-          }
-          if (!annotation.text.trim()) continue
-          const { width, height } = page.getSize()
-          const x = annotation.xRatio * width
-          const y = height - annotation.yRatio * height - annotation.fontSize
-          const color = hexToRgb(annotation.color)
-          const font = await getEmbeddedFont(annotation.fontFamily)
-          const lineHeight = annotation.fontSize * 1.25
-
-          annotation.text.split(/\r?\n/).forEach((line, lineIndex) => {
-            page.drawText(line || ' ', {
-              x,
-              y: y - lineIndex * lineHeight,
-              size: annotation.fontSize,
-              font,
-              color: rgb(color.r, color.g, color.b),
-            })
-          })
-        }
-      }
-
-      const editedBytes = await outDoc.save()
+      const editedBytes = await buildEditedPdfBytes()
       const editedBuffer = editedBytes.buffer.slice(
         editedBytes.byteOffset,
         editedBytes.byteOffset + editedBytes.byteLength
@@ -701,30 +829,72 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     }
   }
 
+  // Save-to-DB integration: respond to save requests from EditorView
+  useEffect(() => {
+    const handleSaveRequest = async () => {
+      try {
+        const editedBytes = await buildEditedPdfBytes()
+        // Convert Uint8Array to base64
+        let binary = ''
+        const chunkSize = 0x8000
+        for (let i = 0; i < editedBytes.length; i += chunkSize) {
+          binary += String.fromCharCode(...editedBytes.subarray(i, i + chunkSize))
+        }
+        const base64 = window.btoa(binary)
+        
+        window.dispatchEvent(new CustomEvent('editor-save-content-ready', {
+          detail: {
+            contentBase64: base64,
+            contentType: 'application/pdf',
+          },
+        }))
+      } catch (err) {
+        console.error('PDF serialization for save failed:', err)
+      }
+    }
+
+    window.addEventListener('editor-request-save-content', handleSaveRequest)
+    return () => window.removeEventListener('editor-request-save-content', handleSaveRequest)
+  }, [pdfSourceBuffer, pageOrder, annotations, pageOrientation])
+
   const pageItems: PageRailItem[] = pageOrder.map((originalIndex, index) => ({
     id: String(index + 1),
     label: `Page ${index + 1}`,
     fileType: 'pdf',
     pageType: pageOrientation,
-    // Use positional index — pageThumbnails is built sequentially from pageOrder
     thumbnail: originalIndex === -1 ? null : (pageThumbnails[index] ?? null),
     onClick: () => selectPdfPage(index + 1),
     onDelete: !viewOnly ? () => {
+      const prevOrder = [...pageOrder]
+      const prevThumbnails = [...pageThumbnails]
+      
       const newOrder = pageOrder.filter((_, i) => i !== index)
       updatePageOrder(newOrder)
 
-      // Immediately rebuild thumbnails for the remaining pages
       setPageThumbnails((prev) => prev.filter((_, i) => i !== index))
 
-      // Always validate and update currentPage to ensure valid state
+      const prevSafeCurrentPage = currentPage
       if (newOrder.length === 0) {
         setCurrentPage(1)
       } else if (currentPage > newOrder.length) {
         setCurrentPage(newOrder.length)
       } else if (currentPage === index + 1) {
-        // If we deleted the current page, show the next page or go back
         setCurrentPage(Math.min(index + 1, newOrder.length))
       }
+
+      window.dispatchEvent(
+        new CustomEvent('editor-history-snapshot', {
+          detail: {
+            label: 'Delete Page',
+            applyUndo: () => {
+              updatePageOrder(prevOrder)
+              setPageThumbnails(prevThumbnails)
+              setCurrentPage(prevSafeCurrentPage)
+            },
+            applyRedo: () => {}
+          }
+        })
+      )
     } : undefined,
   }))
 
@@ -738,7 +908,6 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     newOrder.splice(toIndex, 0, removedPages[0])
     updatePageOrder(newOrder)
 
-    // Update current page if needed
     if (currentPage === fromIndex + 1) {
       setCurrentPage(toIndex + 1)
     } else if (currentPage > fromIndex && currentPage <= toIndex) {
@@ -777,7 +946,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     <div className="flex-1 min-h-0 bg-gray-100 flex overflow-hidden">
       <div ref={viewerRef} className="flex-1 min-w-0 overflow-auto p-0 sm:p-1 md:p-2 relative">
         {/* Mode Toggle */}
-        <div className="absolute top-4 right-6 z-20">
+        <div data-print-hidden="true" className="absolute top-4 right-6 z-20">
           <button
             onClick={() => toggleViewMode()}
             className={`flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-semibold shadow-sm transition-all border ${viewOnly
@@ -790,7 +959,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
         </div>
 
         <div className="mx-auto flex w-full max-w-none flex-col gap-2">
-          <div className="rounded-lg border border-gray-200 bg-white px-2 py-2 sm:px-4 sm:py-3 shadow-sm">
+          <div data-print-hidden="true" className="rounded-lg border border-gray-200 bg-white px-2 py-2 sm:px-4 sm:py-3 shadow-sm">
             <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 onClick={() => setIsAddTextMode((v) => !v)}
@@ -804,6 +973,23 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                 {isAddTextMode ? 'Click on page...' : 'Add Text'}
               </button>
               <button
+                onClick={() => setShowHeaderFooterPanel((v) => !v)}
+                className={`flex items-center gap-1.5 rounded px-3 py-2 text-sm font-medium transition-colors ${
+                  showHeaderFooterPanel
+                    ? 'bg-indigo-600 text-white'
+                    : (header.enabled || footer.enabled)
+                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
+                      : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+                }`}
+                title="En-tête / Pied de page"
+              >
+                <LayoutTemplate size={16} />
+                En-tête / Pied de page
+                {(header.enabled || footer.enabled) && (
+                  <span className="ml-1 h-1.5 w-1.5 rounded-full bg-indigo-400 inline-block" />
+                )}
+              </button>
+              <button
                 onClick={handleExportEditedPdf}
                 disabled={isExporting}
                 className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
@@ -813,18 +999,178 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                 {isExporting ? 'Exporting...' : 'Download Edited PDF'}
               </button>
             </div>
+
+            {/* ── Header / Footer Panel ── */}
+            {showHeaderFooterPanel && (
+              <div className="mt-3 border-t border-gray-200 pt-3 space-y-4">
+                {/* Hint */}
+                <p className="text-[11px] text-gray-400 text-center">
+                  Variables : <code className="bg-gray-100 px-1 rounded">{'{page}'}</code> · <code className="bg-gray-100 px-1 rounded">{'{total}'}</code> · <code className="bg-gray-100 px-1 rounded">{'{date}'}</code>
+                </p>
+
+                {/* ── Header ── */}
+                {(['header', 'footer'] as const).map((zone) => {
+                  const cfg = zone === 'header' ? header : footer
+                  const setCfg = (patch: Partial<HeaderFooterConfig>) =>
+                    zone === 'header'
+                      ? setHeader((prev) => ({ ...prev, ...patch }))
+                      : setFooter((prev) => ({ ...prev, ...patch }))
+                  const label = zone === 'header' ? 'En-tête' : 'Pied de page'
+
+                  return (
+                    <div key={zone} className={`rounded-lg border px-3 py-2.5 transition-colors ${
+                      cfg.enabled ? 'border-indigo-300 bg-indigo-50/60' : 'border-gray-200 bg-gray-50'
+                    }`}>
+                      {/* Title + toggle */}
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-semibold text-gray-800">{label}</span>
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                          <div
+                            onClick={() => setCfg({ enabled: !cfg.enabled })}
+                            className={`relative w-9 h-5 rounded-full transition-colors ${
+                              cfg.enabled ? 'bg-indigo-500' : 'bg-gray-300'
+                            }`}
+                          >
+                            <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                              cfg.enabled ? 'translate-x-4' : 'translate-x-0'
+                            }`} />
+                          </div>
+                          <span className="text-xs text-gray-500">{cfg.enabled ? 'Activé' : 'Désactivé'}</span>
+                        </label>
+                      </div>
+
+                      {cfg.enabled && (
+                        <div className="space-y-2">
+                          {/* Text input */}
+                          <input
+                            type="text"
+                            value={cfg.text}
+                            onChange={(e) => setCfg({ text: e.target.value })}
+                            placeholder={zone === 'header' ? 'Titre du document — {page} / {total}' : 'Page {page} sur {total}  |  {date}'}
+                            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200"
+                          />
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {/* Alignment */}
+                            <div className="flex rounded border border-gray-200 overflow-hidden">
+                              {(['left', 'center', 'right'] as const).map((a) => (
+                                <button
+                                  key={a}
+                                  type="button"
+                                  onClick={() => setCfg({ align: a })}
+                                  className={`px-2 py-1 ${
+                                    cfg.align === a ? 'bg-indigo-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-100'
+                                  }`}
+                                  title={a === 'left' ? 'Gauche' : a === 'center' ? 'Centre' : 'Droite'}
+                                >
+                                  {a === 'left' && <AlignLeft size={13} />}
+                                  {a === 'center' && <AlignCenter size={13} />}
+                                  {a === 'right' && <AlignRight size={13} />}
+                                </button>
+                              ))}
+                            </div>
+
+                            {/* Font size */}
+                            <label className="flex items-center gap-1 text-xs text-gray-600">
+                              Taille
+                              <select
+                                value={cfg.fontSize}
+                                onChange={(e) => setCfg({ fontSize: Number(e.target.value) })}
+                                className="rounded border border-gray-200 px-1 py-0.5 text-xs"
+                              >
+                                {[7, 8, 9, 10, 11, 12, 14].map((s) => (
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                            </label>
+
+                            {/* Color */}
+                            <label className="flex items-center gap-1 text-xs text-gray-600">
+                              Couleur
+                              <input
+                                type="color"
+                                value={cfg.color}
+                                onChange={(e) => setCfg({ color: e.target.value })}
+                                className="h-6 w-8 cursor-pointer rounded border p-0"
+                              />
+                            </label>
+                          </div>
+
+                          {/* Live preview */}
+                          <div
+                            className="rounded border border-dashed border-indigo-300 bg-white px-3 py-1.5 text-[11px] text-gray-500 overflow-hidden truncate"
+                            style={{
+                              textAlign: cfg.align,
+                              fontFamily: 'Helvetica, Arial, sans-serif',
+                              fontSize: `${Math.max(9, cfg.fontSize)}px`,
+                              color: cfg.color,
+                            }}
+                          >
+                            {resolveHeaderFooterText(cfg, currentPage, pageOrder.length) || <span className="italic text-gray-300">Aperçu…</span>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
 
-          <div className="rounded-lg border border-gray-200 bg-white p-0 sm:p-1 shadow-md">
+          <div className="rounded-lg border border-gray-200 bg-white p-0 shadow-md">
             <div
               ref={canvasContainerRef}
-              className="mx-auto w-fit overflow-auto bg-white shadow-[0_10px_30px_rgba(15,23,42,0.14)]"
+              className="mx-auto flex w-full justify-center overflow-auto bg-white shadow-[0_10px_30px_rgba(15,23,42,0.14)]"
               style={{
                 maxHeight: 'calc(100vh - 170px)',
                 transition: 'width 250ms ease',
               }}
             >
-              <div className="relative w-fit">
+              <div data-print-document="true" className="relative w-fit">
+                {/* Header overlay */}
+                {header.enabled && header.text.trim() && pageContentSize.width > 0 && (
+                  <div
+                    className="absolute left-0 right-0 pointer-events-none z-10"
+                    style={{ top: 0, height: '32px', display: 'flex', alignItems: 'flex-start', paddingTop: '6px' }}
+                  >
+                    <div
+                      className="w-full px-4 truncate"
+                      style={{
+                        textAlign: header.align,
+                        fontSize: `${Math.max(8, header.fontSize)}px`,
+                        color: header.color,
+                        fontFamily: 'Helvetica, Arial, sans-serif',
+                        borderBottom: '1px solid rgba(0,0,0,0.12)',
+                        paddingBottom: '3px',
+                        background: 'rgba(255,255,255,0.85)',
+                      }}
+                    >
+                      {resolveHeaderFooterText(header, currentPage, pageOrder.length)}
+                    </div>
+                  </div>
+                )}
+                {/* Footer overlay */}
+                {footer.enabled && footer.text.trim() && pageContentSize.height > 0 && (
+                  <div
+                    className="absolute left-0 right-0 pointer-events-none z-10"
+                    style={{ bottom: 0, height: '28px', display: 'flex', alignItems: 'flex-end', paddingBottom: '5px' }}
+                  >
+                    <div
+                      className="w-full px-4 truncate"
+                      style={{
+                        textAlign: footer.align,
+                        fontSize: `${Math.max(8, footer.fontSize)}px`,
+                        color: footer.color,
+                        fontFamily: 'Helvetica, Arial, sans-serif',
+                        borderTop: '1px solid rgba(0,0,0,0.12)',
+                        paddingTop: '3px',
+                        background: 'rgba(255,255,255,0.85)',
+                      }}
+                    >
+                      {resolveHeaderFooterText(footer, currentPage, pageOrder.length)}
+                    </div>
+                  </div>
+                )}
                 <canvas
                   ref={canvasRef}
                   onClick={handleCanvasClick}
@@ -860,11 +1206,10 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                           width: `${(annotation.widthRatio || 0.22) * (pageContentSize.width || 1)}px`,
                           height: `${(annotation.heightRatio || 0.12) * (pageContentSize.height || 1)}px`,
                           transform: 'translateY(-100%)',
-                        }}
-                        dangerouslySetInnerHTML={{
+                        }}                        dangerouslySetInnerHTML={{
                           __html: getShapeSvg(annotation.shape || 'rectangle', {
                             stroke: annotation.color,
-                            fill: 'rgba(220, 38, 38, 0.08)',
+                            fill: annotation.fillColor || shapeFillColor,
                           }),
                         }}
                       />
@@ -979,7 +1324,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       </div>
 
       <PageRail
-        title="SCREENS"
+        title="Document Pages"
         items={pageItems}
         activeId={String(currentPage)}
         accentColor="#dc2626"

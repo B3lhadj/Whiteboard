@@ -32,3 +32,9 @@
   filter: none !important;
   opacity: 1 !important;
 }
+
+.dark .word-editor-root .word-edit-highlight {
+  background-color: rgba(251, 191, 36, 0.22);
+  color: #fde68a !important;
+  box-shadow: inset 0 -1px 0 rgba(251, 191, 36, 0.38);
+}
