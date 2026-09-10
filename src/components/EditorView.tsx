@@ -739,6 +739,20 @@ export default function EditorView({ file }: EditorViewProps) {
   }
 
   const getEditableRootFromTarget = (target: EventTarget | null) => {
+    if (!target) return null
+
+    if (target instanceof HTMLElement) {
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement ||
+        Boolean(target.closest('#find-replace-dialog')) ||
+        Boolean(target.closest('input, textarea, select'))
+      ) {
+        return null
+      }
+    }
+
     if (!(target instanceof Node)) {
       const savedRoot = lastEditableRootRef.current
       if (savedRoot && document.contains(savedRoot)) return savedRoot
@@ -750,10 +764,7 @@ export default function EditorView({ file }: EditorViewProps) {
     const root = element?.closest('[contenteditable="true"]') as HTMLElement | null
     if (root) return root
 
-    const savedRoot = lastEditableRootRef.current
-    if (savedRoot && document.contains(savedRoot)) return savedRoot
-
-    return document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null
+    return null
   }
 
   const saveEditableSelection = () => {
@@ -2344,6 +2355,12 @@ export default function EditorView({ file }: EditorViewProps) {
       <FindReplaceDialog
         open={showFindReplace}
         mode={findReplaceMode}
+        editorEl={
+          (document.querySelector('.word-editor-root') as HTMLElement | null) ||
+          (document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null) ||
+          (document.querySelector('[data-editor-shell] [contenteditable="true"]') as HTMLElement | null) ||
+          lastEditableRootRef.current
+        }
         onClose={() => setShowFindReplace(false)}
       />
 
