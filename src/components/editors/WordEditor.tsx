@@ -20,6 +20,7 @@ import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
 import type { PageMargins } from '../../pageLayout'
 import { getEditorName } from '../../services/editAudit'
 import { getUserHighlightColor, getUserColor } from '../../utils/userColors'
+import FindReplaceDialog from '../FindReplaceDialog'
 
 interface WordPagePreview {
   id: string
@@ -162,6 +163,8 @@ export default function WordEditor({ file }: WordEditorProps) {
   const [showHighlightPanel, setShowHighlightPanel] = useState(false)
   const [activeHFZone, setActiveHFZone] = useState<'header' | 'footer'>('header')
   const [hasEdited, setHasEdited] = useState(false)
+  const [findReplaceOpen, setFindReplaceOpen] = useState(false)
+  const [findReplaceMode, setFindReplaceMode] = useState<'find' | 'replace'>('find')
   const editorRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentScrollRef = useRef<HTMLDivElement>(null)
@@ -1830,6 +1833,32 @@ export default function WordEditor({ file }: WordEditorProps) {
     return () => window.removeEventListener('keydown', handleConfirmShape)
   }, [])
 
+  // ── Ctrl+F → Find  |  Ctrl+H → Replace ──────────────────────────────────
+  useEffect(() => {
+    const handleFindReplace = (e: KeyboardEvent) => {
+      const isCtrl = e.ctrlKey || e.metaKey
+      if (isCtrl && e.key === 'f') {
+        // Only intercept if focus is in the editor area
+        const active = document.activeElement
+        const inEditor = editorRef.current?.contains(active) || active === editorRef.current
+        if (!inEditor && findReplaceOpen) {
+          // dialog already open – just let native browser handle elsewhere
+          return
+        }
+        e.preventDefault()
+        setFindReplaceMode('find')
+        setFindReplaceOpen(true)
+      }
+      if (isCtrl && (e.key === 'h' || e.key === 'H')) {
+        e.preventDefault()
+        setFindReplaceMode('replace')
+        setFindReplaceOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handleFindReplace)
+    return () => window.removeEventListener('keydown', handleFindReplace)
+  }, [findReplaceOpen])
+
   useEffect(() => {
     const handleShapeColorChange = (event: Event) => {
       const color = (event as CustomEvent<{ color?: string }>).detail?.color
@@ -2623,6 +2652,14 @@ export default function WordEditor({ file }: WordEditorProps) {
           setCurrentPage(pagePreviews.length + 1)
         }}
         onReorder={handleReorderPages}
+      />
+
+      {/* ── Find & Replace dialog ── */}
+      <FindReplaceDialog
+        open={findReplaceOpen}
+        mode={findReplaceMode}
+        editorEl={editorRef.current}
+        onClose={() => setFindReplaceOpen(false)}
       />
     </div>
   )

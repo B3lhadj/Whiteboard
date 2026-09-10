@@ -2345,7 +2345,6 @@ export default function EditorView({ file }: EditorViewProps) {
         open={showFindReplace}
         mode={findReplaceMode}
         onClose={() => setShowFindReplace(false)}
-        editorSelector="[data-editor-shell]"
       />
 
       {showEditHistory && (() => {
