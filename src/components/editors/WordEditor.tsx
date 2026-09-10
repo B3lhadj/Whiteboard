@@ -19,6 +19,7 @@ import { getThemeForFileType } from '../../utils'
 import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
 import type { PageMargins } from '../../pageLayout'
 import { getEditorName } from '../../services/editAudit'
+import { getUserHighlightColor, getUserColor } from '../../utils/userColors'
 
 interface WordPagePreview {
   id: string
@@ -1508,6 +1509,12 @@ export default function WordEditor({ file }: WordEditorProps) {
     highlight.dataset.modifiedAction = modifiedAction
     highlight.dataset.modifiedAt = new Date().toISOString()
     highlight.title = `${modifiedAction} by ${modifiedBy}`
+    // Apply the user's unique color as the highlight background
+    const uc = getUserColor(modifiedBy)
+    highlight.dataset.modifierColor = uc.color
+    highlight.style.backgroundColor = getUserHighlightColor(modifiedBy)
+    highlight.style.color = uc.color
+    highlight.style.boxShadow = `inset 0 -1.5px 0 ${uc.color}55`
 
     try {
       range.surroundContents(highlight)

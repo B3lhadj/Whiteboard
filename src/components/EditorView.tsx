@@ -5,6 +5,8 @@ import { Document as DocxDocument, Packer, PageOrientation as DocxPageOrientatio
 import { PDFDocument, StandardFonts } from 'pdf-lib'
 import { getEditorLanguageSettings, getPageDimensions, getThemeForFileType } from '../utils'
 import { showSuccessToast, showErrorToast } from '../utils/toast'
+import FindReplaceDialog from './FindReplaceDialog'
+import { getUserColor, getUserHighlightColor, getUserInitials } from '../utils/userColors'
 import Ribbon, {
   type BulletListValue,
   type MultilevelListValue,
@@ -82,6 +84,8 @@ export default function EditorView({ file }: EditorViewProps) {
   const [editStatusLoaded, setEditStatusLoaded] = useState(false)
   const [showEditHistory, setShowEditHistory] = useState(false)
   const [showShareDialog, setShowShareDialog] = useState(false)
+  const [showFindReplace, setShowFindReplace] = useState(false)
+  const [findReplaceMode, setFindReplaceMode] = useState<'find' | 'replace'>('find')
   const [shareRecipient, setShareRecipient] = useState('')
   const [sharePermission, setSharePermission] = useState<'view' | 'edit'>('view')
   const [shareResultMessage, setShareResultMessage] = useState('')
@@ -1560,43 +1564,16 @@ export default function EditorView({ file }: EditorViewProps) {
     applyCaseToEditableSelection(mode)
   }
 
-  const replaceTextInEditable = (searchText: string, replacementText: string) => {
-    const root = getEditableRoot()
-    if (!root) return false
 
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-    const textNodes: Text[] = []
-    let currentNode = walker.nextNode()
-    while (currentNode) {
-      textNodes.push(currentNode as Text)
-      currentNode = walker.nextNode()
-    }
 
-    let replaced = false
-    for (const textNode of textNodes) {
-      if (!textNode.nodeValue || !textNode.nodeValue.includes(searchText)) continue
-      textNode.nodeValue = textNode.nodeValue.split(searchText).join(replacementText)
-      replaced = true
-    }
-
-    if (replaced) {
-      root.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true }))
-    }
-
-    return replaced
-  }
 
   const handleFind = () => {
     if (file.type === 'image') {
       showErrorToast('Find is not available for images')
       return
     }
-    const searchText = window.prompt('Find text:')?.trim()
-    if (!searchText) return
-    const browserWindow = window as Window & { find?: (query: string) => boolean }
-    if (!browserWindow.find?.(searchText)) {
-      showErrorToast(`Could not find "${searchText}" in the active document.`)
-    }
+    setFindReplaceMode('find')
+    setShowFindReplace(true)
   }
 
   const handleReplace = () => {
@@ -1604,15 +1581,8 @@ export default function EditorView({ file }: EditorViewProps) {
       showErrorToast('Replace is not available for images')
       return
     }
-    const searchText = window.prompt('Find text to replace:')?.trim()
-    if (!searchText) return
-    const replacementText = window.prompt('Replace with:', '')
-    if (replacementText === null) return
-
-    const replaced = replaceTextInEditable(searchText, replacementText)
-    if (!replaced) {
-      showErrorToast('Select a document area with editable text before replacing.')
-    }
+    setFindReplaceMode('replace')
+    setShowFindReplace(true)
   }
 
   const toolbarActions: RibbonActions = {
@@ -1688,6 +1658,16 @@ export default function EditorView({ file }: EditorViewProps) {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement
+      const isNativeInput =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLSelectElement
+
+      // While the user is typing in a native <input>/<textarea>, skip ALL editor
+      // shortcuts so characters reach the input as normal.
+      if (isNativeInput) return
+
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault()
         handleSave()
@@ -1711,6 +1691,17 @@ export default function EditorView({ file }: EditorViewProps) {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
         e.preventDefault()
         handleRedo()
+      }
+      // Ctrl+F → Find, Ctrl+H → Replace
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && file.type !== 'image' && file.type !== 'video') {
+        e.preventDefault()
+        setFindReplaceMode('find')
+        setShowFindReplace(true)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'h' && file.type !== 'image' && file.type !== 'video') {
+        e.preventDefault()
+        setFindReplaceMode('replace')
+        setShowFindReplace(true)
       }
       if (
         (file.type === 'image' || file.type === 'video') &&
@@ -2011,7 +2002,29 @@ export default function EditorView({ file }: EditorViewProps) {
                 <span className="text-gray-300">|</span>
                 <span>ID {file.id}</span>
                 <span className="text-gray-300">|</span>
-                <span>{lastEditLabel}</span>
+                {/* ── Color dot for last editor ── */}
+                {lastEdit && (() => {
+                  const editorId = lastEdit.editorName || lastEdit.userId || ''
+                  const uc = getUserColor(editorId)
+                  return (
+                    <span className="flex items-center gap-1">
+                      <span
+                        title={`Modifié par ${editorId}`}
+                        style={{
+                          display: 'inline-block',
+                          width: 8, height: 8,
+                          borderRadius: '50%',
+                          background: uc.color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ color: uc.color, fontWeight: 600 }}>
+                        {editorId}
+                      </span>
+                    </span>
+                  )
+                })()}
+                {!lastEdit && <span>{lastEditLabel}</span>}
                 {lastEditTimeLabel && (
                   <>
                     <span className="text-gray-300">|</span>
@@ -2327,50 +2340,95 @@ export default function EditorView({ file }: EditorViewProps) {
           </div>
         </div>
       )}
+      {/* ── Find / Replace floating dialog ── */}
+      <FindReplaceDialog
+        open={showFindReplace}
+        mode={findReplaceMode}
+        onClose={() => setShowFindReplace(false)}
+        editorSelector="[data-editor-shell]"
+      />
+
       {showEditHistory && (() => {
         const modalModifiedWords = Array.from(document.querySelectorAll<HTMLElement>('.word-edit-highlight'))
           .map((el, i) => ({
             id: `mod-word-${i}`,
             text: el.textContent?.trim() || '',
             by: el.dataset.modifiedBy || 'Inconnu',
+            color: el.dataset.modifierColor || getUserColor(el.dataset.modifiedBy || '').color,
+            highlight: getUserHighlightColor(el.dataset.modifiedBy || ''),
             at: el.dataset.modifiedAt || '',
             element: el,
           }))
           .filter((w) => w.text.length > 0)
 
+        // Build per-user color legend from edit events
+        const uniqueEditors = Array.from(
+          new Map(
+            editEvents
+              .map((ev) => ev.editorName || ev.userId || '')
+              .filter(Boolean)
+              .map((name) => [name, getUserColor(name)])
+          ).entries()
+        )
+
         return (
-          <div data-print-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="w-full max-w-lg overflow-hidden rounded-xl bg-white text-gray-900 shadow-2xl">
-              <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+          <div data-print-hidden="true" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" style={{ backdropFilter: 'blur(2px)' }}>
+            <div className="w-full max-w-lg overflow-hidden rounded-2xl bg-white text-gray-900 shadow-2xl">
+              {/* Header */}
+              <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4">
                 <div className="min-w-0">
-                  <div className="font-semibold text-base flex items-center gap-2">
-                    Edit history
+                  <div className="font-bold text-base flex items-center gap-2">
+                    ✏️ Edit history
                     {modalModifiedWords.length > 0 && (
-                      <span className="rounded-full bg-yellow-400 px-2 py-0.5 text-xs font-bold text-yellow-950">
+                      <span className="rounded-full bg-violet-100 px-2 py-0.5 text-xs font-bold text-violet-800">
                         {modalModifiedWords.length} mots modifiés
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 truncate text-xs text-gray-500">{file.name} - ID {file.id}</div>
+                  <div className="mt-1 truncate text-xs text-gray-400">{file.name} · ID {file.id}</div>
                 </div>
                 <button
                   onClick={() => setShowEditHistory(false)}
-                  className="rounded p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-900"
+                  className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                   title="Close edit history"
                 >
                   <X size={18} />
                 </button>
               </div>
 
-              <div className="max-h-[65vh] overflow-y-auto px-5 py-3 space-y-4">
-                {/* ── Section: Mots modifiés (Surlignés en jaune) ── */}
+              <div className="max-h-[68vh] overflow-y-auto px-5 py-4 space-y-4">
+
+                {/* ── User Color Legend ── */}
+                {uniqueEditors.length > 0 && (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                    <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">Légende des éditeurs</div>
+                    <div className="flex flex-wrap gap-2">
+                      {uniqueEditors.map(([name, uc]) => (
+                        <div
+                          key={name}
+                          className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
+                          style={{ background: uc.highlight, border: `1.5px solid ${uc.color}`, color: uc.color }}
+                        >
+                          {/* Avatar initials */}
+                          <span
+                            className="inline-flex items-center justify-center rounded-full text-[10px] font-bold"
+                            style={{ width: 18, height: 18, background: uc.color, color: uc.textColor, flexShrink: 0 }}
+                          >
+                            {getUserInitials(name)}
+                          </span>
+                          {name}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Section: Mots modifiés ── */}
                 {modalModifiedWords.length > 0 && (
-                  <div className="rounded-xl border border-yellow-300/80 bg-yellow-50/70 p-3 shadow-sm">
-                    <div className="flex items-center justify-between gap-2 border-b border-yellow-200/80 pb-2 mb-2">
-                      <span className="text-xs font-bold text-yellow-900 flex items-center gap-1.5">
-                        ✏️ Mots modifiés dans le document
-                      </span>
-                      <span className="text-[10px] text-yellow-700 font-medium">
+                  <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                    <div className="flex items-center justify-between gap-2 border-b border-gray-100 pb-2 mb-2">
+                      <span className="text-xs font-bold text-gray-700">Mots modifiés dans le document</span>
+                      <span className="text-[10px] text-gray-500 font-medium">
                         {modalModifiedWords.length} surlignage{modalModifiedWords.length > 1 ? 's' : ''}
                       </span>
                     </div>
@@ -2382,14 +2440,19 @@ export default function EditorView({ file }: EditorViewProps) {
                           onClick={() => {
                             setShowEditHistory(false)
                             w.element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                            w.element.style.outline = '2px solid #f59e0b'
-                            setTimeout(() => { w.element.style.outline = '' }, 1400)
+                            w.element.style.outline = `2.5px solid ${w.color}`
+                            setTimeout(() => { w.element.style.outline = '' }, 1600)
                           }}
-                          className="group flex items-center gap-1 rounded bg-yellow-200/90 border border-yellow-400/60 px-2 py-0.5 text-xs font-semibold text-amber-950 transition-all hover:bg-yellow-300 hover:shadow-sm"
+                          className="group flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold transition-all hover:shadow-sm"
+                          style={{
+                            background: w.highlight,
+                            border: `1.5px solid ${w.color}`,
+                            color: w.color,
+                          }}
                           title={`Modifié par ${w.by} — cliquer pour localiser`}
                         >
                           <span>{w.text}</span>
-                          <span className="text-[9px] font-normal text-yellow-700 group-hover:text-yellow-900">({w.by})</span>
+                          <span className="text-[9px] font-normal opacity-70">({w.by})</span>
                         </button>
                       ))}
                     </div>
@@ -2398,16 +2461,22 @@ export default function EditorView({ file }: EditorViewProps) {
 
                 {/* ── Section: Historique des événements ── */}
                 <div>
-                  <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Activité récente</div>
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Activité récente</div>
                   {editEvents.length === 0 ? (
-                    <div className="py-8 text-center text-sm text-gray-500">No recorded edits for this file.</div>
+                    <div className="py-8 text-center text-sm text-gray-400">Aucune modification enregistrée.</div>
                   ) : (
                     <div className="space-y-2">
                       {editEvents.map((event) => {
                         const contentSnippet = getEditContent(event)
                         const metaLabel = formatEditMetadata(event)
+                        const editorId = event.editorName || event.userId || ''
+                        const uc = getUserColor(editorId)
                         return (
-                          <div key={event._id} className="rounded-lg border border-gray-200 bg-white px-4 py-3 shadow-sm hover:border-gray-300 transition-colors">
+                          <div
+                            key={event._id}
+                            className="rounded-xl border border-gray-100 bg-white px-4 py-3 shadow-sm hover:border-gray-200 transition-colors"
+                            style={{ borderLeft: `4px solid ${uc.color}` }}
+                          >
                             <div className="flex items-start justify-between gap-3">
                               <div className="min-w-0 flex-1">
                                 {/* Action + kind badge */}
@@ -2417,17 +2486,27 @@ export default function EditorView({ file }: EditorViewProps) {
                                     <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 uppercase tracking-wide">{metaLabel}</span>
                                   )}
                                 </div>
-                                {/* Editor name */}
-                                <div className="mt-1 text-xs text-gray-500">
-                                  by <span className="font-medium text-gray-700">{event.editorName || event.userId || 'Unknown'}</span>
+                                {/* Editor name with color avatar */}
+                                <div className="mt-1 flex items-center gap-1.5 text-xs">
+                                  <span
+                                    className="inline-flex items-center justify-center rounded-full text-[9px] font-bold"
+                                    style={{ width: 16, height: 16, background: uc.color, color: uc.textColor, flexShrink: 0 }}
+                                  >
+                                    {getUserInitials(editorId)}
+                                  </span>
+                                  <span style={{ color: uc.color, fontWeight: 600 }}>{editorId || 'Unknown'}</span>
                                 </div>
-                                {/* Content snippet with yellow highlight styling */}
+                                {/* Content snippet */}
                                 {contentSnippet && (
                                   <div className="mt-2 flex items-center gap-1.5">
-                                    <span className="text-[10px] font-bold text-amber-700 uppercase">Mot :</span>
+                                    <span className="text-[10px] font-bold uppercase" style={{ color: uc.color }}>Mot :</span>
                                     <span
-                                      className="rounded border border-amber-300/80 px-2 py-0.5 font-mono text-xs font-semibold text-amber-950 shadow-2xs break-all"
-                                      style={{ background: 'rgba(250,204,21,0.35)' }}
+                                      className="rounded-md border px-2 py-0.5 font-mono text-xs font-semibold break-all"
+                                      style={{
+                                        background: uc.highlight,
+                                        borderColor: uc.color + '44',
+                                        color: uc.color,
+                                      }}
                                     >
                                       &ldquo;{contentSnippet}&rdquo;
                                     </span>
@@ -2436,7 +2515,7 @@ export default function EditorView({ file }: EditorViewProps) {
                               </div>
                               {/* Time */}
                               <div className="shrink-0 text-right">
-                                <div className="text-xs font-medium text-gray-500">{formatEditTime(event.createdAt)}</div>
+                                <div className="text-xs font-medium text-gray-400">{formatEditTime(event.createdAt)}</div>
                               </div>
                             </div>
                           </div>
