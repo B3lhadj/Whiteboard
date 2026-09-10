@@ -6,6 +6,17 @@ import PageRail, { type PageRailItem } from '../PageRail'
 import EditorNavigation from '../EditorNavigation'
 import { getThemeForFileType } from '../../utils' // Add this import
 import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
+import { getEditorName } from '../../services/editAudit'
+import { getUserColor, syncFileUsers, getUserInitials } from '../../utils/userColors'
+
+interface ExcelCellModification {
+  by: string
+  color: string
+  highlight: string
+  at: string
+  prevValue?: string
+  newValue?: string
+}
 
 interface ExcelEditorProps {
   file: DocumentFile
@@ -204,6 +215,59 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
   
   // Add theme color based on file type
   const themeColor = getThemeForFileType(file.type)
+
+  // Track cell modifications with per-user colors
+  const [cellModifications, setCellModifications] = useState<Record<string, Record<string, ExcelCellModification>>>(() => {
+    try {
+      const stored = localStorage.getItem(`excel_cell_mods_${file.id}`)
+      return stored ? JSON.parse(stored) : {}
+    } catch {
+      return {}
+    }
+  })
+
+  // Sync users from modifications into registry
+  useEffect(() => {
+    const users: string[] = []
+    Object.values(cellModifications).forEach((sheetMods) => {
+      Object.values(sheetMods).forEach((mod) => {
+        if (mod.by && !users.includes(mod.by)) users.push(mod.by)
+      })
+    })
+    if (users.length > 0) {
+      syncFileUsers(file.id, users)
+    }
+  }, [cellModifications, file.id])
+
+  // Persist modifications to localStorage
+  const recordCellModification = (sheetName: string, rowIndex: number, colIndex: number, prevVal: string, newVal: string) => {
+    const editor = getEditorName()
+    const uc = getUserColor(editor, file.id)
+    const key = `${rowIndex}:${colIndex}`
+    const mod: ExcelCellModification = {
+      by: editor,
+      color: uc.color,
+      highlight: uc.highlight,
+      at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      prevValue: prevVal,
+      newValue: newVal,
+    }
+    setCellModifications((prev) => {
+      const next = {
+        ...prev,
+        [sheetName]: {
+          ...(prev[sheetName] || {}),
+          [key]: mod,
+        },
+      }
+      try {
+        localStorage.setItem(`excel_cell_mods_${file.id}`, JSON.stringify(next))
+      } catch {
+        /* noop */
+      }
+      return next
+    })
+  }
 
   const activeSheetName = sheets[selectedSheet]
   const activeData = activeSheetName ? sheetsData[activeSheetName] || [] : []
@@ -535,7 +599,29 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
     updateCounts(rows)
     setSheetsData(nextSheetsData)
     recordExcelHistory('Modification de cellule', before, after)
+    recordCellModification(activeSheetName, rowIndex, colIndex, currentValue, value)
   }
+
+  // Support find & replace in Excel via 'excel-cell-replace' custom event
+  useEffect(() => {
+    const handleExcelReplace = (e: Event) => {
+      const customEvent = e as CustomEvent<{
+        sheetName?: string
+        rowIndex: number
+        colIndex: number
+        prevValue: string
+        newValue: string
+      }>
+      const detail = customEvent.detail
+      if (!detail) return
+      const targetSheet = detail.sheetName || activeSheetName
+      if (!targetSheet) return
+      updateCellValue(detail.rowIndex, detail.colIndex, detail.newValue)
+    }
+
+    window.addEventListener('excel-cell-replace', handleExcelReplace)
+    return () => window.removeEventListener('excel-cell-replace', handleExcelReplace)
+  }, [activeSheetName, updateCellValue])
 
   const handleCellFocus = (rowIndex: number, colIndex: number) => {
     setSelectedCell({ row: rowIndex, col: colIndex })
@@ -1333,6 +1419,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                 >
                   Col +
                 </button>
+
                 <button
                   onClick={insertColumnAfter}
                   className="h-8 rounded border border-[#6a6a6a] bg-[#242424] px-2 text-xs font-semibold text-white hover:bg-[#2d2d2d]"
@@ -1341,6 +1428,37 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                   + Col
                 </button>
               </div>
+
+              {/* Collaborator legend for Excel */}
+              {(() => {
+                const sheetMods = activeSheetName ? cellModifications[activeSheetName] || {} : {}
+                const contributors = Array.from(new Set(Object.values(sheetMods).map((m) => m.by))).filter(Boolean)
+                if (contributors.length === 0) return null
+                return (
+                  <div className="flex shrink-0 items-center gap-1.5 border-l border-[#444] pl-2">
+                    <span className="text-[10px] uppercase font-bold text-gray-400">Éditeurs:</span>
+                    {contributors.map((name) => {
+                      const uc = getUserColor(name, file.id)
+                      return (
+                        <span
+                          key={name}
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold"
+                          style={{ background: uc.highlight, color: uc.color, border: `1px solid ${uc.color}66` }}
+                          title={`Modifications par ${name}`}
+                        >
+                          <span
+                            className="inline-flex items-center justify-center rounded-full text-[9px] font-bold"
+                            style={{ width: 14, height: 14, background: uc.color, color: uc.textColor }}
+                          >
+                            {getUserInitials(name)}
+                          </span>
+                          {name}
+                        </span>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
             </div>
           </div>
 
@@ -1361,6 +1479,8 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
             >
               <div
                 ref={tableContentRef}
+                data-excel-editor="true"
+                data-excel-sheet={activeSheetName}
                 onPointerDown={handleExcelCanvasPointerDown}
                 onClickCapture={(event) => {
                   if (activeTool === 'shape' || activeTool === 'text') {
@@ -1376,7 +1496,7 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                   activeTool === 'shape' || activeTool === 'text' ? 'cursor-crosshair' : ''
                 }`}
               >
-                <table className="table-fixed border-collapse">
+                <table className="table-fixed border-collapse" data-excel-table="true">
                   <colgroup>
                     <col style={{ width: 48 }} />
                     {columns.map((col, colIndex) => (
@@ -1427,12 +1547,33 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                             ? cellFormats[activeSheetName]?.[getCellKey(rowIndex, colIndex)]
                             : undefined
 
+                          const cellMod = activeSheetName ? cellModifications[activeSheetName]?.[getCellKey(rowIndex, colIndex)] : undefined
+
                           return (
                             <td
                               key={`${rowIndex}-${colIndex}`}
-                              className="border-r border-gray-300 p-0 text-sm"
+                              data-excel-cell="true"
+                              data-row={rowIndex}
+                              data-col={colIndex}
+                              data-sheet={activeSheetName}
+                              className="relative border-r border-gray-300 p-0 text-sm"
                               style={{ width: getColumnWidth(colIndex) }}
+                              title={cellMod ? `Modifié par ${cellMod.by} à ${cellMod.at}` : undefined}
                             >
+                              {/* Distinct user modification marker */}
+                              {cellMod && (
+                                <div
+                                  className="pointer-events-none absolute right-0 top-0 z-10"
+                                  style={{
+                                    width: 0,
+                                    height: 0,
+                                    borderStyle: 'solid',
+                                    borderWidth: '0 8px 8px 0',
+                                    borderColor: `transparent ${cellMod.color} transparent transparent`,
+                                  }}
+                                  title={`Modifié par ${cellMod.by}`}
+                                />
+                              )}
                               {isSelected ? (
                                 <textarea
                                   autoFocus
@@ -1466,13 +1607,13 @@ export default function ExcelEditor({ file }: ExcelEditorProps) {
                                 <button
                                   type="button"
                                   onClick={() => handleCellFocus(rowIndex, colIndex)}
-                                  className="block w-full overflow-hidden whitespace-pre-wrap border-0 px-2 py-2 text-left text-sm leading-5 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500"
+                                  className="block w-full overflow-hidden whitespace-pre-wrap border-0 px-2 py-2 text-left text-sm leading-5 hover:bg-green-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 transition-colors"
                                   style={{
                                     width: `${getColumnWidth(colIndex)}px`,
                                     minWidth: `${getColumnWidth(colIndex)}px`,
                                     minHeight: `${rowHeight}px`,
                                     color: cellFormat?.color || '#111827',
-                                    backgroundColor: cellFormat?.backgroundColor || '#ffffff',
+                                    backgroundColor: cellMod ? cellMod.highlight : (cellFormat?.backgroundColor || '#ffffff'),
                                     fontFamily: cellFormat?.fontFamily || 'Calibri',
                                     fontSize: `${cellFormat?.fontSize || 14}px`,
                                     fontWeight: cellFormat?.bold ? 700 : 400,

@@ -125,6 +125,8 @@ export default function FindReplaceDialog({ open, mode = 'find', onClose, editor
   const getRoot = useCallback((): Element | null => {
     if (editorEl && document.contains(editorEl)) return editorEl
     return (
+      document.querySelector('[data-excel-editor="true"]') ||
+      document.querySelector('[data-pdf-editor="true"]') ||
       document.querySelector('.word-editor-root') ||
       document.querySelector('[data-print-document="true"][contenteditable="true"]') ||
       document.querySelector('[data-editor-shell] [contenteditable="true"]') ||
@@ -248,19 +250,50 @@ export default function FindReplaceDialog({ open, mode = 'find', onClose, editor
 
     const activeMarks = root.querySelectorAll<HTMLElement>(`.${ACTIVE_CLASS}`)
     if (activeMarks.length > 0) {
-      activeMarks[0].replaceWith(document.createTextNode(replaceText))
+      const mark = activeMarks[0]
+      const cellTd = mark.closest<HTMLElement>('[data-excel-cell="true"]')
+      const prevVal = cellTd ? cellTd.innerText : ''
+      mark.replaceWith(document.createTextNode(replaceText))
       root.normalize()
       root.dispatchEvent(new Event('input', { bubbles: true }))
+
+      if (cellTd) {
+        const rowIndex = Number(cellTd.dataset.row ?? 0)
+        const colIndex = Number(cellTd.dataset.col ?? 0)
+        const sheetName = cellTd.dataset.sheet
+        const newVal = cellTd.innerText
+        window.dispatchEvent(
+          new CustomEvent('excel-cell-replace', {
+            detail: { sheetName, rowIndex, colIndex, prevValue: prevVal, newValue: newVal },
+          })
+        )
+      }
+
       setStatus({ type: 'success', msg: 'Remplacement effectué (1 occurrence)' })
       setTimeout(() => highlight(findText, currentIndex), 80)
     } else if (currentIndex >= 0 && currentIndex < matchesRef.current.length) {
       const m = matchesRef.current[currentIndex]
       if (m && document.contains(m.node)) {
         try {
+          const cellTd = (m.node.parentElement as HTMLElement | null)?.closest<HTMLElement>('[data-excel-cell="true"]')
+          const prevVal = cellTd ? cellTd.innerText : ''
           const full = m.node.nodeValue || ''
           m.node.nodeValue = full.slice(0, m.startOffset) + replaceText + full.slice(m.endOffset)
           root.normalize()
           root.dispatchEvent(new Event('input', { bubbles: true }))
+
+          if (cellTd) {
+            const rowIndex = Number(cellTd.dataset.row ?? 0)
+            const colIndex = Number(cellTd.dataset.col ?? 0)
+            const sheetName = cellTd.dataset.sheet
+            const newVal = cellTd.innerText
+            window.dispatchEvent(
+              new CustomEvent('excel-cell-replace', {
+                detail: { sheetName, rowIndex, colIndex, prevValue: prevVal, newValue: newVal },
+              })
+            )
+          }
+
           setStatus({ type: 'success', msg: 'Remplacement effectué (1 occurrence)' })
           setTimeout(() => highlight(findText, currentIndex), 80)
         } catch {
@@ -292,10 +325,17 @@ export default function FindReplaceDialog({ open, mode = 'find', onClose, editor
     }
 
     let count = 0
+    const affectedExcelCells = new Map<HTMLElement, { prev: string }>()
+
     byNode.forEach((nodeMatches) => {
       nodeMatches.sort((a, b) => b.startOffset - a.startOffset)
       for (const m of nodeMatches) {
         try {
+          const cellTd = (m.node.parentElement as HTMLElement | null)?.closest<HTMLElement>('[data-excel-cell="true"]')
+          if (cellTd && !affectedExcelCells.has(cellTd)) {
+            affectedExcelCells.set(cellTd, { prev: cellTd.innerText })
+          }
+
           const full = m.node.nodeValue || ''
           m.node.nodeValue = full.slice(0, m.startOffset) + replaceText + full.slice(m.endOffset)
           count++
@@ -307,6 +347,19 @@ export default function FindReplaceDialog({ open, mode = 'find', onClose, editor
 
     root.normalize()
     root.dispatchEvent(new Event('input', { bubbles: true }))
+
+    // Notify Excel of all cell changes
+    affectedExcelCells.forEach((data, cellTd) => {
+      const rowIndex = Number(cellTd.dataset.row ?? 0)
+      const colIndex = Number(cellTd.dataset.col ?? 0)
+      const sheetName = cellTd.dataset.sheet
+      const newVal = cellTd.innerText
+      window.dispatchEvent(
+        new CustomEvent('excel-cell-replace', {
+          detail: { sheetName, rowIndex, colIndex, prevValue: data.prev, newValue: newVal },
+        })
+      )
+    })
     setStatus({
       type: 'success',
       msg: `${count} occurrence${count > 1 ? 's' : ''} remplacée${count > 1 ? 's' : ''}`,

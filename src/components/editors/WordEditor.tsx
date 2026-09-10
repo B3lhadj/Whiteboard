@@ -19,7 +19,7 @@ import { getThemeForFileType } from '../../utils'
 import { getShapeSize, getShapeSvg, type ShapeKind } from '../../shapes'
 import type { PageMargins } from '../../pageLayout'
 import { getEditorName } from '../../services/editAudit'
-import { getUserHighlightColor, getUserColor } from '../../utils/userColors'
+import { getUserColor, syncFileUsers } from '../../utils/userColors'
 
 interface WordPagePreview {
   id: string
@@ -1500,6 +1500,11 @@ export default function WordEditor({ file }: WordEditorProps) {
       existingHighlight.dataset.modifiedAction = modifiedAction
       existingHighlight.dataset.modifiedAt = new Date().toISOString()
       existingHighlight.title = `${modifiedAction} by ${modifiedBy}`
+      const uc = getUserColor(modifiedBy, file.id)
+      existingHighlight.dataset.modifierColor = uc.color
+      existingHighlight.style.backgroundColor = uc.highlight
+      existingHighlight.style.color = uc.color
+      existingHighlight.style.boxShadow = `inset 0 -1.5px 0 ${uc.color}55`
       return selectedText
     }
 
@@ -1509,10 +1514,10 @@ export default function WordEditor({ file }: WordEditorProps) {
     highlight.dataset.modifiedAction = modifiedAction
     highlight.dataset.modifiedAt = new Date().toISOString()
     highlight.title = `${modifiedAction} by ${modifiedBy}`
-    // Apply the user's unique color as the highlight background
-    const uc = getUserColor(modifiedBy)
+    // Apply the user's unique color as the highlight background (unique per user on this file)
+    const uc = getUserColor(modifiedBy, file.id)
     highlight.dataset.modifierColor = uc.color
-    highlight.style.backgroundColor = getUserHighlightColor(modifiedBy)
+    highlight.style.backgroundColor = uc.highlight
     highlight.style.color = uc.color
     highlight.style.boxShadow = `inset 0 -1.5px 0 ${uc.color}55`
 
@@ -1872,6 +1877,25 @@ export default function WordEditor({ file }: WordEditorProps) {
       const spans = Array.from(
         container.querySelectorAll<HTMLElement>('.word-edit-highlight')
       )
+
+      // Collect and register all authors on this file
+      const discoveredAuthors = spans
+        .map((el) => el.dataset.modifiedBy || '')
+        .filter(Boolean)
+      if (discoveredAuthors.length > 0) {
+        syncFileUsers(file.id, discoveredAuthors)
+      }
+
+      // Ensure every highlight tag displays the author's distinct color on this file
+      spans.forEach((el) => {
+        const by = el.dataset.modifiedBy || 'Inconnu'
+        const uc = getUserColor(by, file.id)
+        el.dataset.modifierColor = uc.color
+        el.style.backgroundColor = uc.highlight
+        el.style.color = uc.color
+        el.style.boxShadow = `inset 0 -1.5px 0 ${uc.color}55`
+      })
+
       const words: HighlightedWord[] = spans.map((el, i) => ({
         id: `hw-${i}-${el.dataset.modifiedAt || Date.now()}`,
         text: el.textContent?.trim() || '',
@@ -2506,63 +2530,96 @@ export default function WordEditor({ file }: WordEditorProps) {
           style={{ position: 'absolute', inset: 0, zIndex: 40, pointerEvents: 'none' }}
         >
           <div
-            className="pointer-events-auto absolute right-4 top-4 flex flex-col rounded-xl border border-yellow-200 bg-white/95 shadow-2xl backdrop-blur-sm"
-            style={{ width: 210, maxHeight: 'calc(100vh - 160px)' }}
+            className="pointer-events-auto absolute right-4 top-4 flex flex-col rounded-xl border border-gray-200 bg-white/95 shadow-2xl backdrop-blur-sm"
+            style={{ width: 230, maxHeight: 'calc(100vh - 160px)' }}
           >
             {/* Header */}
-            <div className="flex items-center justify-between gap-2 rounded-t-xl border-b border-yellow-100 bg-yellow-50 px-3 py-2">
+            <div className="flex items-center justify-between gap-2 rounded-t-xl border-b border-gray-100 bg-gray-50 px-3 py-2">
               <div className="flex items-center gap-1.5">
-                <span className="text-xs font-bold text-yellow-800">✏️ Mots modifiés</span>
-                <span className="rounded-full bg-yellow-400 px-1.5 py-0.5 text-[10px] font-bold text-yellow-900">
+                <span className="text-xs font-bold text-gray-800">✏️ Mots modifiés</span>
+                <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-bold text-indigo-800">
                   {highlightedWords.length}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() => setShowHighlightPanel(false)}
-                className="rounded p-0.5 text-yellow-600 hover:bg-yellow-100"
+                className="rounded p-0.5 text-gray-500 hover:bg-gray-200"
                 title="Fermer"
               >
                 ✕
               </button>
             </div>
 
+            {/* Collaborator legend on this file */}
+            {(() => {
+              const authors = Array.from(new Set(highlightedWords.map((w) => w.by))).filter(Boolean)
+              return authors.length > 0 ? (
+                <div className="border-b border-gray-100 bg-gray-50/60 px-3 py-1.5 flex flex-wrap gap-1">
+                  {authors.map((author) => {
+                    const uc = getUserColor(author, file.id)
+                    return (
+                      <span
+                        key={author}
+                        className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                        style={{ background: uc.highlight, color: uc.color, border: `1px solid ${uc.color}55` }}
+                      >
+                        <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: uc.color }} />
+                        {author}
+                      </span>
+                    )
+                  })}
+                </div>
+              ) : null
+            })()}
+
             {/* Word list */}
             <div className="flex-1 overflow-y-auto">
-              {highlightedWords.map((w, i) => (
-                <button
-                  key={w.id}
-                  type="button"
-                  onClick={() => {
-                    w.element.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                    w.element.style.outline = '2px solid #f59e0b'
-                    setTimeout(() => { w.element.style.outline = '' }, 1200)
-                  }}
-                  className="w-full border-b border-yellow-50 px-3 py-2 text-left transition-colors hover:bg-yellow-50 active:bg-yellow-100"
-                >
-                  <div className="flex items-start gap-1.5">
-                    <span className="mt-0.5 shrink-0 text-[10px] font-bold text-yellow-500">{i + 1}</span>
-                    <div className="min-w-0">
-                      <div
-                        className="truncate rounded px-1 text-xs font-semibold text-amber-900"
-                        style={{ background: 'rgba(250,204,21,0.28)' }}
-                      >
-                        {w.text.length > 22 ? `${w.text.slice(0, 22)}…` : w.text}
-                      </div>
-                      <div className="mt-0.5 truncate text-[10px] text-gray-500">{w.by}</div>
-                      {w.at && (
-                        <div className="text-[9px] text-gray-400">
-                          {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(w.at))}
+              {highlightedWords.map((w, i) => {
+                const uc = getUserColor(w.by, file.id)
+                return (
+                  <button
+                    key={w.id}
+                    type="button"
+                    onClick={() => {
+                      w.element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                      w.element.style.outline = `2.5px solid ${uc.color}`
+                      setTimeout(() => {
+                        w.element.style.outline = ''
+                      }, 1200)
+                    }}
+                    className="w-full border-b border-gray-100 px-3 py-2 text-left transition-colors hover:bg-gray-50 active:bg-gray-100"
+                  >
+                    <div className="flex items-start gap-1.5">
+                      <span className="mt-0.5 shrink-0 text-[10px] font-bold" style={{ color: uc.color }}>
+                        {i + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className="truncate rounded px-1.5 py-0.5 text-xs font-semibold"
+                          style={{ background: uc.highlight, color: uc.color, borderLeft: `2.5px solid ${uc.color}` }}
+                        >
+                          {w.text.length > 20 ? `${w.text.slice(0, 20)}…` : w.text}
                         </div>
-                      )}
+                        <div className="mt-1 flex items-center justify-between text-[10px]">
+                          <span className="font-semibold truncate" style={{ color: uc.color }}>
+                            {w.by}
+                          </span>
+                          {w.at && (
+                            <span className="text-gray-400">
+                              {new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date(w.at))}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                )
+              })}
             </div>
 
             {/* Clear all */}
-            <div className="rounded-b-xl border-t border-yellow-100 px-3 py-2">
+            <div className="rounded-b-xl border-t border-gray-100 px-3 py-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2576,7 +2633,7 @@ export default function WordEditor({ file }: WordEditorProps) {
                   setHighlightedWords([])
                   setShowHighlightPanel(false)
                 }}
-                className="w-full rounded bg-yellow-100 px-2 py-1 text-[11px] font-semibold text-yellow-800 hover:bg-yellow-200"
+                className="w-full rounded bg-gray-100 px-2 py-1 text-[11px] font-semibold text-gray-700 hover:bg-gray-200"
               >
                 Effacer les surlignages
               </button>
@@ -2595,7 +2652,7 @@ export default function WordEditor({ file }: WordEditorProps) {
           <button
             type="button"
             onClick={() => setShowHighlightPanel(true)}
-            className="pointer-events-auto absolute right-4 top-4 flex items-center gap-1.5 rounded-full border border-yellow-300 bg-yellow-400 px-3 py-1.5 text-xs font-bold text-yellow-900 shadow-lg hover:bg-yellow-300"
+            className="pointer-events-auto absolute right-4 top-4 flex items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-xs font-bold text-indigo-900 shadow-lg hover:bg-indigo-50"
           >
             ✏️ {highlightedWords.length} mot{highlightedWords.length > 1 ? 's' : ''} modifié{highlightedWords.length > 1 ? 's' : ''}
           </button>

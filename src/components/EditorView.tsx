@@ -2016,7 +2016,7 @@ export default function EditorView({ file }: EditorViewProps) {
                 {/* ── Color dot for last editor ── */}
                 {lastEdit && (() => {
                   const editorId = lastEdit.editorName || lastEdit.userId || ''
-                  const uc = getUserColor(editorId)
+                  const uc = getUserColor(editorId, file.id)
                   return (
                     <span className="flex items-center gap-1">
                       <span
@@ -2356,6 +2356,8 @@ export default function EditorView({ file }: EditorViewProps) {
         open={showFindReplace}
         mode={findReplaceMode}
         editorEl={
+          (document.querySelector('[data-excel-editor="true"]') as HTMLElement | null) ||
+          (document.querySelector('[data-pdf-editor="true"]') as HTMLElement | null) ||
           (document.querySelector('.word-editor-root') as HTMLElement | null) ||
           (document.querySelector('[data-print-document="true"][contenteditable="true"]') as HTMLElement | null) ||
           (document.querySelector('[data-editor-shell] [contenteditable="true"]') as HTMLElement | null) ||
@@ -2370,20 +2372,20 @@ export default function EditorView({ file }: EditorViewProps) {
             id: `mod-word-${i}`,
             text: el.textContent?.trim() || '',
             by: el.dataset.modifiedBy || 'Inconnu',
-            color: el.dataset.modifierColor || getUserColor(el.dataset.modifiedBy || '').color,
-            highlight: getUserHighlightColor(el.dataset.modifiedBy || ''),
+            color: el.dataset.modifierColor || getUserColor(el.dataset.modifiedBy || '', file.id).color,
+            highlight: getUserHighlightColor(el.dataset.modifiedBy || '', file.id),
             at: el.dataset.modifiedAt || '',
             element: el,
           }))
           .filter((w) => w.text.length > 0)
 
-        // Build per-user color legend from edit events
+        // Build per-user color legend from edit events and file user registry
         const uniqueEditors = Array.from(
           new Map(
             editEvents
               .map((ev) => ev.editorName || ev.userId || '')
               .filter(Boolean)
-              .map((name) => [name, getUserColor(name)])
+              .map((name) => [name, getUserColor(name, file.id)])
           ).entries()
         )
 
@@ -2486,7 +2488,7 @@ export default function EditorView({ file }: EditorViewProps) {
                         const contentSnippet = getEditContent(event)
                         const metaLabel = formatEditMetadata(event)
                         const editorId = event.editorName || event.userId || ''
-                        const uc = getUserColor(editorId)
+                        const uc = getUserColor(editorId, file.id)
                         return (
                           <div
                             key={event._id}

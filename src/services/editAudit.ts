@@ -142,21 +142,36 @@ export interface ShareFileResult {
 }
 
 export const getEditorName = () => {
+  const session = getAuthSession()
+  if (session?.user?.displayName?.trim()) {
+    return session.user.displayName.trim()
+  }
+  if (session?.user?.email?.trim()) {
+    return session.user.email.trim()
+  }
   const storedName = localStorage.getItem('editorUserName')?.trim()
   return storedName || 'Local user'
 }
 
-export const getEditorEmail = () => localStorage.getItem('editorUserEmail')?.trim() || ''
+export const getEditorEmail = () => {
+  const session = getAuthSession()
+  if (session?.user?.email?.trim()) {
+    return session.user.email.trim().toLowerCase()
+  }
+  return localStorage.getItem('editorUserEmail')?.trim() || ''
+}
 
 export const setEditorName = (name: string) => {
   const nextName = name.trim() || 'Local user'
   localStorage.setItem('editorUserName', nextName)
+  window.dispatchEvent(new CustomEvent('editor-user-changed', { detail: { name: nextName } }))
   return nextName
 }
 
 export const setEditorEmail = (email: string) => {
   const nextEmail = email.trim().toLowerCase()
   localStorage.setItem('editorUserEmail', nextEmail)
+  window.dispatchEvent(new CustomEvent('editor-user-changed', { detail: { email: nextEmail } }))
   return nextEmail
 }
 

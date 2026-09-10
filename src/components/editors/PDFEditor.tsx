@@ -8,6 +8,8 @@ import PageRail, { type PageRailItem } from '../PageRail.tsx'
 import EditorNavigation from '../EditorNavigation'
 import { EDITOR_COLOR_PALETTE, EDITOR_FONT_FAMILIES, EDITOR_FONT_SIZES } from '../../editorOptions'
 import { getShapeSvg, type ShapeKind } from '../../shapes'
+import { getEditorName } from '../../services/editAudit'
+import { getUserColor, syncFileUsers, getUserInitials } from '../../utils/userColors'
 
 interface PdfAnnotation {
   id: string
@@ -23,6 +25,8 @@ interface PdfAnnotation {
   fontSize: number
   fontFamily: string
   color: string
+  author?: string
+  authorColor?: string
 }
 
 type PdfListCommandDetail = {
@@ -105,12 +109,37 @@ export default function PDFEditor({ file }: PDFEditorProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [pdfSourceBuffer, setPdfSourceBuffer] = useState<ArrayBuffer | null>(null)
-  const [annotations, setAnnotations] = useState<PdfAnnotation[]>([])
+  const [annotations, setAnnotations] = useState<PdfAnnotation[]>(() => {
+    try {
+      const saved = localStorage.getItem(`pdf_annotations_${file.id}`)
+      return saved ? JSON.parse(saved) : []
+    } catch {
+      return []
+    }
+  })
   const [pageThumbnails, setPageThumbnails] = useState<string[]>([])
   const [isAddTextMode, setIsAddTextMode] = useState(false)
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null)
   const [isExporting, setIsExporting] = useState(false)
   const [viewerWidth, setViewerWidth] = useState(900)
+
+  // Sync users from annotations
+  useEffect(() => {
+    const authors = annotations.map((a) => a.author).filter((a): a is string => Boolean(a))
+    if (authors.length > 0) {
+      syncFileUsers(file.id, authors)
+    }
+  }, [annotations, file.id])
+
+  // Save annotations to localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem(`pdf_annotations_${file.id}`, JSON.stringify(annotations))
+    } catch {
+      /* noop */
+    }
+  }, [annotations, file.id])
+
   const [pageContentSize, setPageContentSize] = useState({ width: 0, height: 0 })
   const [pageCanvasSize, setPageCanvasSize] = useState({ width: 0, height: 0 })
   const [showHeaderFooterPanel, setShowHeaderFooterPanel] = useState(false)
@@ -368,7 +397,6 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     currentPage,
     zoom,
     pageOrder,
-    pageOrientation,
     availablePageWidth,
     rightPageGutter,
     viewerWidth,
@@ -391,6 +419,9 @@ export default function PDFEditor({ file }: PDFEditorProps) {
     const yRatio = Math.min(Math.max(y / contentHeight, 0), 1)
 
     const annotationKind = activeTool === 'shape' ? 'shape' : 'text'
+    const author = getEditorName()
+    const uc = getUserColor(author, file.id)
+
     const newAnnotation: PdfAnnotation = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       page: currentPage,
@@ -405,6 +436,8 @@ export default function PDFEditor({ file }: PDFEditorProps) {
       fontSize: textFontSize,
       fontFamily: textFontFamily,
       color: textColor,
+      author,
+      authorColor: uc.color,
     }
 
     setAnnotations((prev) => [...prev, newAnnotation])
@@ -1126,7 +1159,7 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                 transition: 'width 250ms ease',
               }}
             >
-              <div data-print-document="true" className="relative w-fit">
+              <div data-print-document="true" data-pdf-editor="true" className="relative w-fit">
                 {/* Header overlay */}
                 {header.enabled && header.text.trim() && pageContentSize.width > 0 && (
                   <div
@@ -1191,52 +1224,93 @@ export default function PDFEditor({ file }: PDFEditorProps) {
                 />
 
                 {pageAnnotations.map((annotation) => {
+                  const authorName = annotation.author || 'Inconnu'
+                  const authorUc = getUserColor(authorName, file.id)
+
                   if (annotation.kind === 'shape') {
                     return (
-                      <button
+                      <div
                         key={annotation.id}
-                        type="button"
-                        onClick={() => setSelectedAnnotationId(annotation.id)}
-                        className={`absolute resize overflow-hidden border bg-transparent ${
-                          selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-transparent'
-                        }`}
+                        className="absolute group"
                         style={{
                           left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
                           top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
                           width: `${(annotation.widthRatio || 0.22) * (pageContentSize.width || 1)}px`,
                           height: `${(annotation.heightRatio || 0.12) * (pageContentSize.height || 1)}px`,
                           transform: 'translateY(-100%)',
-                        }}                        dangerouslySetInnerHTML={{
-                          __html: getShapeSvg(annotation.shape || 'rectangle', {
-                            stroke: annotation.color,
-                            fill: annotation.fillColor || shapeFillColor,
-                          }),
                         }}
-                      />
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAnnotationId(annotation.id)}
+                          className={`w-full h-full resize overflow-hidden border bg-transparent ${
+                            selectedAnnotationId === annotation.id ? 'ring-2 ring-indigo-500' : 'border-transparent'
+                          }`}
+                          style={{
+                            outline: `2px dashed ${authorUc.color}`,
+                            outlineOffset: '2px',
+                          }}
+                          dangerouslySetInnerHTML={{
+                            __html: getShapeSvg(annotation.shape || 'rectangle', {
+                              stroke: annotation.color,
+                              fill: annotation.fillColor || shapeFillColor,
+                            }),
+                          }}
+                        />
+                        {/* Author pill badge */}
+                        <div
+                          className="pointer-events-none absolute -top-5 left-0 z-20 flex items-center gap-1 rounded px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm opacity-80 group-hover:opacity-100"
+                          style={{ backgroundColor: authorUc.color }}
+                        >
+                          <span>{authorName}</span>
+                        </div>
+                      </div>
                     )
                   }
 
                   return (
-                    <textarea
+                    <div
                       key={annotation.id}
-                      data-pdf-annotation-id={annotation.id}
-                      value={annotation.text}
-                      onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
-                      onFocus={() => setSelectedAnnotationId(annotation.id)}
-                      rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
-                      className={`absolute min-w-[120px] resize both rounded border bg-white/80 px-1 py-0.5 text-sm leading-tight outline-none ${
-                        selectedAnnotationId === annotation.id ? 'border-red-500' : 'border-gray-300'
-                      }`}
+                      className="absolute group"
                       style={{
                         left: `${annotation.xRatio * (pageContentSize.width || 1)}px`,
                         top: `${annotation.yRatio * (pageContentSize.height || 1)}px`,
-                        fontSize: `${annotation.fontSize}px`,
-                        fontFamily: annotation.fontFamily,
-                        color: annotation.color,
                         transform: 'translateY(-100%)',
-                        lineHeight: 1.25,
                       }}
-                    />
+                    >
+                      {/* Author badge tag */}
+                      <div
+                        className="pointer-events-none mb-0.5 flex items-center gap-1 w-fit rounded px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm opacity-85 group-hover:opacity-100 transition-opacity"
+                        style={{ backgroundColor: authorUc.color }}
+                      >
+                        <span
+                          className="inline-flex items-center justify-center rounded-full text-[8px] font-bold bg-white/30"
+                          style={{ width: 12, height: 12 }}
+                        >
+                          {getUserInitials(authorName)}
+                        </span>
+                        <span>{authorName}</span>
+                      </div>
+                      <textarea
+                        data-pdf-annotation-id={annotation.id}
+                        value={annotation.text}
+                        onChange={(e) => updateAnnotation(annotation.id, { text: e.target.value })}
+                        onFocus={() => setSelectedAnnotationId(annotation.id)}
+                        rows={Math.max(1, annotation.text.split(/\r?\n/).length)}
+                        className={`min-w-[120px] resize both rounded border px-1.5 py-1 text-sm leading-tight outline-none shadow-sm ${
+                          selectedAnnotationId === annotation.id ? 'ring-2 ring-indigo-500' : ''
+                        }`}
+                        style={{
+                          fontSize: `${annotation.fontSize}px`,
+                          fontFamily: annotation.fontFamily,
+                          color: annotation.color,
+                          backgroundColor: '#ffffff',
+                          border: `2px solid ${authorUc.color}`,
+                          boxShadow: `0 0 0 1px ${authorUc.highlight}`,
+                          lineHeight: 1.25,
+                        }}
+                      />
+                    </div>
                   )
                 })}
               </div>
